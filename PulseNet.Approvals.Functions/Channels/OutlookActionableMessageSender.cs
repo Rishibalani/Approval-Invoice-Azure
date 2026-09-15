@@ -45,6 +45,7 @@ public sealed class OutlookActionableMessageSender : IChannelSender
 {
     private readonly IEmailTransport _transport;
     private readonly OutlookCardBuilder _cardBuilder;
+    private readonly ApprovalEmailBuilder _emailBuilder;
     private readonly ActionTokenService _tokenService;
     private readonly ChannelOptions _options;
     private readonly ILogger<OutlookActionableMessageSender> _logger;
@@ -55,12 +56,14 @@ public sealed class OutlookActionableMessageSender : IChannelSender
     public OutlookActionableMessageSender(
         IEmailTransport transport,
         OutlookCardBuilder cardBuilder,
+        ApprovalEmailBuilder emailBuilder,
         ActionTokenService tokenService,
         IOptions<ChannelOptions> options,
         ILogger<OutlookActionableMessageSender> logger)
     {
         _transport = transport;
         _cardBuilder = cardBuilder;
+        _emailBuilder = emailBuilder;
         _tokenService = tokenService;
         _options = options.Value;
         _logger = logger;
@@ -125,7 +128,7 @@ public sealed class OutlookActionableMessageSender : IChannelSender
             {
                 ToAddress = recipient,
                 ToDisplayName = payload.Approver.DisplayName,
-                Subject = BuildSubject(payload),
+                Subject = _emailBuilder.BuildSubject(payload),
                 HtmlBody = html,
                 FromAddress = outlook.FromAddress,
                 FromDisplayName = outlook.FromDisplayName,
@@ -153,24 +156,17 @@ public sealed class OutlookActionableMessageSender : IChannelSender
 
     // ------------------------------------------------------------------
 
-    private static string BuildSubject(ApprovalDispatchPayload payload)
-    {
-        var party = payload.Document.CounterpartyName ?? payload.Document.CounterpartyNo ?? "Unknown";
-
-        var amount = FormatMoney(
-            payload.Document.AmountInclTax != 0 ? payload.Document.AmountInclTax : payload.Document.Amount,
-            payload.Document.CurrencyCode);
-
-        return $"Approval needed: {payload.Document.DocumentNo} — {party} — {amount}";
-    }
-
     /// <summary>
     /// The full HTML document: card in the head, fallback in the body.
     ///
-    /// Table layout with inline styles throughout, which looks like 2005 web
-    /// development because email clients are 2005 web browsers. Outlook renders
-    /// HTML with Word's engine - no flexbox, no grid, no external stylesheets,
-    /// unreliable div layout. Tables and inline styles are what survive.
+    /// Outlook finds the script block, checks the originator against its
+    /// registered providers, and renders the card instead of the body.
+    /// Anything that cannot - GCC High, DoD, personal accounts, third-party
+    /// clients, some mobile configurations - simply shows the HTML.
+    ///
+    /// Which is why the fallback is not optional. It carries the same facts,
+    /// from the same view model, so the two can never disagree about what an
+    /// invoice says.
     /// </summary>
     private string BuildHtml(
         ApprovalDispatchPayload payload,
@@ -203,137 +199,17 @@ public sealed class OutlookActionableMessageSender : IChannelSender
         }
 
         sb.Append("</head>");
-        sb.Append(BuildFallbackBody(payload, actionMode, approveToken, rejectToken));
+
+        // In the fallback the buttons are always LINKS, never Action.Http - a
+        // plain client cannot POST. Same token, query string instead of body,
+        // landing on the browser endpoint.
+        sb.Append(_emailBuilder.BuildBody(
+            payload,
+            actionMode,
+            approveToken is null ? null : LinkFor(approveToken),
+            rejectToken is null ? null : LinkFor(rejectToken)));
+
         sb.Append("</html>");
-
-        return sb.ToString();
-    }
-
-    private string BuildFallbackBody(
-        ApprovalDispatchPayload payload,
-        ChannelActionMode actionMode,
-        string? approveToken,
-        string? rejectToken)
-    {
-        var sb = new StringBuilder();
-        var doc = payload.Document;
-        var isPayable = doc.Direction == "Payable";
-        var currency = doc.CurrencyCode;
-
-        var headlineAmount = FormatMoney(
-            doc.AmountInclTax != 0 ? doc.AmountInclTax : doc.Amount, currency);
-
-        sb.Append("<body style=\"margin:0;padding:24px;background:#f5f5f5;");
-        sb.Append("font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a;\">");
-        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\">");
-        sb.Append("<table role=\"presentation\" width=\"580\" cellpadding=\"0\" cellspacing=\"0\" ");
-        sb.Append("style=\"background:#ffffff;border-radius:8px;padding:28px;\">");
-
-        // Header
-        sb.Append("<tr><td>");
-        sb.Append($"<div style=\"font-size:18px;font-weight:600;\">{Enc(isPayable ? "Purchase invoice approval" : "Sales invoice approval")}</div>");
-        sb.Append($"<div style=\"color:#666;margin-top:4px;\">{Enc(doc.CounterpartyName ?? doc.CounterpartyNo ?? "Unknown party")}</div>");
-        sb.Append($"<div style=\"font-size:28px;font-weight:600;margin-top:16px;\">{Enc(headlineAmount)}</div>");
-        sb.Append("</td></tr>");
-
-        // Facts — same set and order as the card, so the two never disagree
-        sb.Append("<tr><td style=\"padding-top:20px;\">");
-        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:14px;\">");
-
-        sb.Append(Row("Document", doc.DocumentNo));
-        sb.Append(Row("Their reference", doc.ExternalDocumentNo));
-        sb.Append(Row(isPayable ? "Vendor" : "Customer", ComposeParty(doc.CounterpartyName, doc.CounterpartyNo)));
-
-        if (doc.PayToDiffers)
-        {
-            sb.Append(Row("Pay-to", ComposeParty(doc.PayToName, doc.PayToNo)));
-        }
-
-        sb.Append(Row("Amount excl. tax", FormatMoney(doc.AmountExclTax, currency)));
-
-        if (doc.AmountInclTax != doc.AmountExclTax)
-        {
-            sb.Append(Row("Amount incl. tax", FormatMoney(doc.AmountInclTax, currency)));
-        }
-
-        if (!string.IsNullOrWhiteSpace(currency) && doc.Amount != doc.AmountLcy)
-        {
-            sb.Append(Row("Local value", FormatMoney(doc.AmountLcy, null)));
-        }
-
-        sb.Append(Row("Document date", doc.DocumentDate));
-        sb.Append(Row("Posting date", doc.PostingDate));
-        sb.Append(Row("Due", doc.DueDate));
-        sb.Append(Row("Requested by", payload.Approval.RequesterLabel));
-
-        sb.Append("</table></td></tr>");
-
-        // Warnings, above the buttons — an approver who has already decided by
-        // the time they scroll past will not read a caveat placed underneath.
-        if (doc.PayToDiffers)
-        {
-            sb.Append(Warning("Payment goes to a different party than the vendor on this invoice. Worth confirming that is expected.", "#d97706"));
-        }
-
-        foreach (var reason in payload.Policy.SuppressionReasons)
-        {
-            var text = reason switch
-            {
-                "VendorBankDetailsChanged" => "This vendor's bank details changed after the invoice was created. Please review in Business Central before approving.",
-                "HighValue" => "This invoice is above the value that can be approved from an email. Please open it in Business Central.",
-                "ChannelCeiling" => "This invoice is above the limit for approving by email. Please use Business Central.",
-                "ApproverLimitExceeded" => "This amount is above your approval limit. Business Central will route it onward.",
-                "DocumentChanged" => "This invoice was edited after the request was raised. Please review it before approving.",
-                _ => string.Empty
-            };
-
-            if (text.Length > 0)
-            {
-                sb.Append(Warning(text, "#a4262c"));
-            }
-        }
-
-        // Chain context
-        if (payload.Approval.TotalStepsInChain > 1)
-        {
-            var chain = payload.Approval.IsFinalStep
-                ? $"Approval {payload.Approval.SequenceNo} of {payload.Approval.TotalStepsInChain}. This is the final approval — approving releases the invoice."
-                : $"Approval {payload.Approval.SequenceNo} of {payload.Approval.TotalStepsInChain}. Further approval is required after yours.";
-
-            sb.Append($"<tr><td style=\"padding-top:16px;color:#666;font-size:13px;\">{Enc(chain)}</td></tr>");
-        }
-
-        // Buttons. In the fallback these are always LINKS, never Action.Http -
-        // a plain client cannot POST. They carry the same token in a query
-        // string and land on the browser endpoint instead.
-        sb.Append("<tr><td style=\"padding-top:24px;\">");
-
-        if (actionMode != ChannelActionMode.NotifyOnly)
-        {
-            if (!string.IsNullOrWhiteSpace(approveToken))
-            {
-                sb.Append(Button(LinkFor(approveToken), "Approve", "#107c10"));
-            }
-
-            if (!string.IsNullOrWhiteSpace(rejectToken))
-            {
-                sb.Append(Button(LinkFor(rejectToken), "Reject", "#a4262c"));
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(doc.DeepLink))
-        {
-            sb.Append(Button(doc.DeepLink, "View in Business Central", "#5a5a5a"));
-        }
-
-        sb.Append("</td></tr>");
-
-        sb.Append("<tr><td style=\"padding-top:24px;color:#999;font-size:12px;\">");
-        sb.Append($"Approval buttons expire {payload.Policy.ActionTokenTtlMinutes} minutes after this was sent. ");
-        sb.Append("After that, please use Business Central.");
-        sb.Append("</td></tr>");
-
-        sb.Append("</table></td></tr></table></body>");
 
         return sb.ToString();
     }
@@ -343,49 +219,5 @@ public sealed class OutlookActionableMessageSender : IChannelSender
         var baseUrl = _options.ActionEndpointBaseUrl;
         var separator = baseUrl.Contains('?') ? "&" : "?";
         return $"{baseUrl}{separator}t={Uri.EscapeDataString(token)}";
-    }
-
-    private static string Row(string label, string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return $"<tr><td style=\"padding:4px 0;color:#666;width:150px;vertical-align:top;\">{Enc(label)}</td>" +
-               $"<td style=\"padding:4px 0;\">{Enc(value)}</td></tr>";
-    }
-
-    private static string Warning(string text, string colour) =>
-        "<tr><td style=\"padding-top:16px;\">" +
-        $"<div style=\"background:#fff4e5;border-left:3px solid {colour};padding:12px;font-size:14px;\">" +
-        Enc(text) + "</div></td></tr>";
-
-    private static string Button(string url, string label, string colour) =>
-        $"<a href=\"{Enc(url)}\" style=\"display:inline-block;padding:10px 20px;margin-right:8px;" +
-        $"background:{colour};color:#ffffff;text-decoration:none;border-radius:4px;" +
-        $"font-size:14px;font-weight:600;\">{Enc(label)}</a>";
-
-    /// <summary>
-    /// HTML-encodes every interpolated value. Vendor names come from a database
-    /// somebody else can write to, and an unencoded angle bracket is how a
-    /// broken layout becomes an injected link.
-    /// </summary>
-    private static string Enc(string? value) => WebUtility.HtmlEncode(value ?? string.Empty);
-
-    private static string ComposeParty(string? name, string? number)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return number ?? string.Empty;
-        }
-
-        return string.IsNullOrWhiteSpace(number) ? name : $"{name} ({number})";
-    }
-
-    private static string FormatMoney(decimal amount, string? currencyCode)
-    {
-        var formatted = amount.ToString("N2", CultureInfo.InvariantCulture);
-        return string.IsNullOrWhiteSpace(currencyCode) ? formatted : $"{currencyCode} {formatted}";
     }
 }

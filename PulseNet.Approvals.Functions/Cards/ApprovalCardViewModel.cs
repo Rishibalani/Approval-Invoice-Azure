@@ -181,12 +181,6 @@ public sealed record ApprovalCardViewModel
 
     // ------------------------------------------------------------------
 
-    //private static string Money(decimal amount, string? currencyCode)
-    //{
-    //    var n = amount.ToString("N2", Ci);
-    //    return string.IsNullOrWhiteSpace(currencyCode) ? n : $"{n} {currencyCode}";
-    //}
-
     private static string? Date(string? isoDate)
     {
         if (string.IsNullOrWhiteSpace(isoDate)) return null;

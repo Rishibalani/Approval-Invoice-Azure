@@ -25,6 +25,13 @@ public sealed class BusinessCentralOptions
 
     public string BaseUrl => $"https://api.businesscentral.dynamics.com/v2.0/{TenantId}/{EnvironmentName}";
 
+    /// <summary>
+    /// The approver identity API. Used to read who the approvers are and to
+    /// write back the Entra object ID resolved from Graph.
+    /// </summary>
+    public string IdentitiesUrl =>
+        $"{BaseUrl}/api/{ApiPublisher}/{ApiGroup}/{ApiVersion}/companies({CompanyId})/pnApproverIdentities";
+
     public string ApprovalEntriesUrl =>
         $"{BaseUrl}/api/{ApiPublisher}/{ApiGroup}/{ApiVersion}/companies({CompanyId})/pnApprovalEntries";
 

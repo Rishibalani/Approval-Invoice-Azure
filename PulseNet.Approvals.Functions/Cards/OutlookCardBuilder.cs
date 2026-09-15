@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json.Nodes;
 using PulseNet.Approvals.Functions.Models;
 
@@ -7,45 +6,51 @@ namespace PulseNet.Approvals.Functions.Cards;
 /// <summary>
 /// Builds the Adaptive Card that Outlook embeds in an email.
 ///
-/// WHY THIS IS NOT ApprovalCardBuilder
+/// FORMATTING LIVES IN ApprovalCardViewModel, NOT HERE.
 ///
-/// Same fields, different vocabulary. Outlook's Actionable Message renderer
-/// targets Adaptive Card 1.0, and the Teams card uses several things that do
-/// not exist there:
+/// This class arranges elements. It does not format money, resolve a blank
+/// currency code to LCY, decide which facts to show, or work out the requester
+/// label. All of that is shared with the Teams card through the view model, so
+/// the two cannot disagree about what an invoice says.
 ///
-///   Action.Execute      no bot, no invoke channel - Outlook uses Action.Http
-///   refresh             1.4, ignored
-///   msteams             Teams-only, ignored
-///   action style        1.2. Outlook renders default buttons regardless
-///   isRequired          declared but NOT enforced client-side. See below
+/// An earlier version of this file did its own formatting, and the result was
+/// Teams showing "$10.00 CAD" while Outlook showed "CAD 10.00" for the same
+/// invoice - along with missing pay-to, dimensions, lines and the requester
+/// fallback chain. Every fix applied to one card then had to be remembered for
+/// the other, and it was not.
 ///
-/// Trying to serve both from one builder means either crippling the Teams card
-/// or shipping a card Outlook renders as a blank block, which is how it fails -
-/// no error, no fallback, just nothing where the card should be.
+/// WHY IT IS A SEPARATE CLASS FROM ApprovalCardBuilder
+///
+/// Same content, different element vocabulary. Outlook's Actionable Message
+/// renderer targets Adaptive Card 1.0, and the Teams card uses several things
+/// that do not exist there:
+///
+///   Action.Execute            no bot in email. Outlook uses Action.Http
+///   Container style / bleed   1.2
+///   verticalContentAlignment  1.1
+///   refresh, msteams          Teams-only or later
+///   action style              1.2, rendered as a default button
+///   isRequired                accepted and NOT enforced. See below
+///
+/// Serving both from one builder means either crippling the Teams card or
+/// shipping a card Outlook renders as a blank block - and it fails silently,
+/// with no error in the email, the logs, or the send result.
 ///
 /// TWO PROPERTIES OUTLOOK REQUIRES AND TEAMS DOES NOT
 ///
-///   originator  the provider ID from the Actionable Email Developer
-///               Dashboard. Without it Outlook silently refuses to render.
-///   hideOriginalBody  suppresses the HTML fallback when the card renders,
-///               so the recipient does not see the same content twice.
+///   originator        the provider ID. Without it, no card renders at all
+///   hideOriginalBody  suppresses the HTML fallback when the card does render
 ///
 /// ON isRequired
 ///
-/// Outlook accepts the property and does not enforce it. A comment box marked
-/// required can still be submitted empty. Any input that matters must be
-/// validated server-side, which is where it should have been anyway.
+/// Outlook accepts the property and ignores it. A comment box marked required
+/// still submits empty, which is why the rejection-reason rule is enforced in
+/// ApprovalDecisionService rather than on the card.
 /// </summary>
 public sealed class OutlookCardBuilder
 {
     private const string AdaptiveCardVersion = "1.0";
 
-    /// <summary>
-    /// Builds the card. Action URLs point at the Outlook action endpoint and
-    /// carry the signed token in the POST body rather than the query string -
-    /// a body is not written to browser history, proxy logs or referrer
-    /// headers the way a URL is.
-    /// </summary>
     public JsonObject Build(
         ApprovalDispatchPayload payload,
         ChannelActionMode actionMode,
@@ -54,20 +59,23 @@ public sealed class OutlookCardBuilder
         string? approveToken,
         string? rejectToken)
     {
+        var vm = ApprovalCardViewModel.From(payload);
+
         var card = new JsonObject
         {
             ["type"] = "AdaptiveCard",
             ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
             ["version"] = AdaptiveCardVersion,
 
-            // Without this, Outlook renders nothing and reports nothing.
+            // Without this, Outlook silently declines to render and shows the
+            // HTML fallback instead. No error appears anywhere.
             ["originator"] = originatorId,
 
             // The HTML body is a fallback for clients that cannot render the
             // card. When the card does render, showing both is just noise.
             ["hideOriginalBody"] = true,
 
-            ["body"] = BuildBody(payload)
+            ["body"] = BuildBody(vm, payload)
         };
 
         var actions = BuildActions(payload, actionMode, actionEndpointUrl, approveToken, rejectToken);
@@ -81,113 +89,79 @@ public sealed class OutlookCardBuilder
     }
 
     // ------------------------------------------------------------------
-    //  Body - same information as the Teams card, 1.0 elements only
+    //  Body
     // ------------------------------------------------------------------
 
-    private static JsonArray BuildBody(ApprovalDispatchPayload payload)
+    private static JsonArray BuildBody(ApprovalCardViewModel vm, ApprovalDispatchPayload payload)
     {
-        var isPayable = payload.Document.Direction == "Payable";
+        var body = new JsonArray();
 
-        var body = new JsonArray
+        // Header stacked rather than the Teams ColumnSet.
+        // verticalContentAlignment is 1.1, and without it the amount sits
+        // awkwardly against a two-line title.
+        body.Add(Text(vm.TypeCaption, size: "small", subtle: true));
+        body.Add(Text($"{vm.DocumentNo} · {vm.PartyName}", size: "medium", bold: true, spacing: "none"));
+        body.Add(Text(vm.HeadlineAmount, size: "large", bold: true, spacing: "small"));
+
+        if (vm.CreatedLine is not null)
         {
-            new JsonObject
-            {
-                ["type"] = "TextBlock",
-                ["text"] = isPayable ? "Purchase invoice approval" : "Sales invoice approval",
-                ["weight"] = "bolder",
-                ["size"] = "medium",
-                ["wrap"] = true
-            },
-            new JsonObject
-            {
-                ["type"] = "TextBlock",
-                ["text"] = payload.Document.CounterpartyName
-                           ?? payload.Document.CounterpartyNo
-                           ?? "Unknown party",
-                ["isSubtle"] = true,
-                ["spacing"] = "none",
-                ["wrap"] = true
-            },
-            new JsonObject
-            {
-                ["type"] = "TextBlock",
-                // Tax-inclusive: the figure that leaves the bank account, and
-                // the number an approver reads first.
-                ["text"] = FormatMoney(
-                    payload.Document.AmountInclTax != 0
-                        ? payload.Document.AmountInclTax
-                        : payload.Document.Amount,
-                    payload.Document.CurrencyCode),
-                ["size"] = "large",
-                ["weight"] = "bolder",
-                ["spacing"] = "small"
-            },
-            BuildFactSet(payload)
-        };
+            body.Add(Text(vm.CreatedLine, size: "small", subtle: true, spacing: "small"));
+        }
 
+        if (vm.DelegatedFromName is not null)
+        {
+            // No accent Container - style and bleed are both 1.2. Bold carries
+            // the same signal at 1.0.
+            body.Add(Text($"Delegated to you by {vm.DelegatedFromName}",
+                size: "small", bold: true, spacing: "small"));
+        }
+
+        body.Add(BuildFactSet(vm));
+
+        foreach (var element in BuildLines(vm))
+        {
+            body.Add(element);
+        }
+
+        if (vm.AttachmentNote is not null)
+        {
+            body.Add(Text(vm.AttachmentNote, size: "small", subtle: true, spacing: "small"));
+        }
+
+        // Warnings before the buttons, always. An approver who has already
+        // decided by the time they scroll past the amount will not read a
+        // caveat placed underneath it.
         foreach (var warning in BuildWarnings(payload))
         {
             body.Add(warning);
         }
 
-        if (payload.Approval.TotalStepsInChain > 1)
+        if (vm.ChainContext is not null)
         {
-            body.Add(new JsonObject
-            {
-                ["type"] = "TextBlock",
-                ["text"] = payload.Approval.IsFinalStep
-                    ? $"Approval {payload.Approval.SequenceNo} of {payload.Approval.TotalStepsInChain}. This is the final approval — approving releases the invoice."
-                    : $"Approval {payload.Approval.SequenceNo} of {payload.Approval.TotalStepsInChain}. Further approval is required after yours.",
-                ["isSubtle"] = true,
-                ["size"] = "small",
-                ["wrap"] = true,
-                ["spacing"] = "medium"
-            });
+            body.Add(Text(vm.ChainContext, size: "small", subtle: true, spacing: "medium", separator: true));
         }
 
         return body;
     }
 
     /// <summary>
-    /// Empty values are omitted rather than rendered as a dash. A row reading
-    /// "Due: -" looks like a fault and costs a line on a card that is already
-    /// competing with an inbox for attention.
+    /// Facts arrive from the view model already filtered. Nothing is added
+    /// here, and there is deliberately no placeholder for a missing value -
+    /// FactSet values render as markdown, so a lone dash becomes an empty
+    /// bullet point.
     /// </summary>
-    private static JsonObject BuildFactSet(ApprovalDispatchPayload payload)
+    private static JsonObject BuildFactSet(ApprovalCardViewModel vm)
     {
         var facts = new JsonArray();
 
-        AddFact(facts, "Document", payload.Document.DocumentNo);
-        AddFact(facts, "Their reference", payload.Document.ExternalDocumentNo);
-
-        AddFact(facts,
-            payload.Document.Direction == "Payable" ? "Vendor" : "Customer",
-            ComposeParty(payload.Document.CounterpartyName, payload.Document.CounterpartyNo));
-
-        if (payload.Document.PayToDiffers)
+        foreach (var fact in vm.Facts)
         {
-            AddFact(facts, "Pay-to", ComposeParty(payload.Document.PayToName, payload.Document.PayToNo));
+            facts.Add(new JsonObject
+            {
+                ["title"] = fact.Title,
+                ["value"] = fact.Value
+            });
         }
-
-        var currency = payload.Document.CurrencyCode;
-
-        AddFact(facts, "Amount excl. tax", FormatMoney(payload.Document.AmountExclTax, currency));
-
-        if (payload.Document.AmountInclTax != payload.Document.AmountExclTax)
-        {
-            AddFact(facts, "Amount incl. tax", FormatMoney(payload.Document.AmountInclTax, currency));
-        }
-
-        if (!string.IsNullOrWhiteSpace(currency) &&
-            payload.Document.Amount != payload.Document.AmountLcy)
-        {
-            AddFact(facts, "Local value", FormatMoney(payload.Document.AmountLcy, null));
-        }
-
-        AddFact(facts, "Document date", payload.Document.DocumentDate);
-        AddFact(facts, "Posting date", payload.Document.PostingDate);
-        AddFact(facts, "Due", payload.Document.DueDate);
-        AddFact(facts, "Requested by", payload.Approval.RequesterLabel);
 
         return new JsonObject
         {
@@ -197,18 +171,56 @@ public sealed class OutlookCardBuilder
         };
     }
 
+    /// <summary>
+    /// Lines as a second FactSet rather than the Teams ColumnSet grid.
+    ///
+    /// ColumnSet exists in 1.0, but "stretch" and "auto" column widths behave
+    /// inconsistently across Outlook clients, and a misaligned three-column
+    /// table in a narrow reading pane is worse than a plain list. Description
+    /// as the title, quantity and amount as the value, stays legible
+    /// everywhere.
+    /// </summary>
+    private static IEnumerable<JsonObject> BuildLines(ApprovalCardViewModel vm)
+    {
+        if (vm.Lines.Count == 0)
+        {
+            yield break;
+        }
+
+        yield return Text("Lines", size: "small", bold: true, spacing: "medium", separator: true);
+
+        var facts = new JsonArray();
+
+        foreach (var line in vm.Lines)
+        {
+            facts.Add(new JsonObject
+            {
+                ["title"] = line.Description,
+                ["value"] = $"{line.Quantity}  ·  {line.Amount}"
+            });
+        }
+
+        yield return new JsonObject
+        {
+            ["type"] = "FactSet",
+            ["facts"] = facts
+        };
+
+        if (vm.HiddenLineCount > 0)
+        {
+            yield return Text(
+                $"+{vm.HiddenLineCount} more line(s). Open in Business Central to see all.",
+                size: "small", subtle: true, spacing: "small");
+        }
+    }
+
     private static IEnumerable<JsonObject> BuildWarnings(ApprovalDispatchPayload payload)
     {
         if (payload.Document.PayToDiffers)
         {
-            yield return new JsonObject
-            {
-                ["type"] = "TextBlock",
-                ["text"] = "Payment goes to a different party than the vendor on this invoice. Worth confirming that is expected.",
-                ["wrap"] = true,
-                ["color"] = "warning",
-                ["spacing"] = "medium"
-            };
+            yield return Text(
+                "Payment goes to a different party than the vendor on this invoice. Worth confirming that is expected.",
+                colour: "warning", spacing: "medium");
         }
 
         foreach (var reason in payload.Policy.SuppressionReasons)
@@ -233,20 +245,12 @@ public sealed class OutlookCardBuilder
                 continue;
             }
 
-            yield return new JsonObject
-            {
-                ["type"] = "TextBlock",
-                ["text"] = text,
-                ["wrap"] = true,
-                ["color"] = colour,
-                ["weight"] = colour == "attention" ? "bolder" : "default",
-                ["spacing"] = "medium"
-            };
+            yield return Text(text, colour: colour, bold: colour == "attention", spacing: "medium");
         }
     }
 
     // ------------------------------------------------------------------
-    //  Actions - Action.Http, wrapped in Action.ShowCard for a comment
+    //  Actions
     // ------------------------------------------------------------------
 
     private static JsonArray BuildActions(
@@ -262,12 +266,12 @@ public sealed class OutlookCardBuilder
         {
             if (!string.IsNullOrWhiteSpace(approveToken))
             {
-                actions.Add(DecisionAction("Approve", "approve", actionEndpointUrl, approveToken));
+                actions.Add(DecisionAction("Approve", "approve", actionEndpointUrl, approveToken, reasonRequired: false));
             }
 
             if (!string.IsNullOrWhiteSpace(rejectToken))
             {
-                actions.Add(DecisionAction("Reject", "reject", actionEndpointUrl, rejectToken));
+                actions.Add(DecisionAction("Reject", "reject", actionEndpointUrl, rejectToken, reasonRequired: true));
             }
         }
 
@@ -288,27 +292,29 @@ public sealed class OutlookCardBuilder
     }
 
     /// <summary>
-    /// A decision button, wrapped in ShowCard so the approver can add a
-    /// comment before committing.
+    /// A decision button, wrapped in ShowCard so the approver can add a comment
+    /// before committing.
     ///
     /// The wrapper is not decoration. A bare Action.Http fires the instant it
-    /// is clicked, with no confirmation step - in an inbox, where a stray click
-    /// while scrolling is entirely plausible, that is too easy. ShowCard turns
-    /// approving into a deliberate two-step act and gives somewhere to record
-    /// why.
+    /// is clicked, and in an inbox a stray click while scrolling is entirely
+    /// plausible - too easy for something that releases a payment. ShowCard
+    /// makes approving deliberate and gives somewhere to record why.
     ///
-    /// The comment is optional and is NOT enforced by Outlook: isRequired is
-    /// accepted and ignored. Validate anything that matters server-side.
+    /// On Reject the placeholder says the reason is required, because
+    /// ApprovalDecisionService refuses an empty one. That refusal is the actual
+    /// enforcement; this text only stops the approver discovering it by being
+    /// turned away.
     /// </summary>
     private static JsonObject DecisionAction(
         string title,
         string verb,
         string actionEndpointUrl,
-        string token)
+        string token,
+        bool reasonRequired)
     {
-        // {{comment.value}} is substituted by Outlook from the input below.
-        // Serialised carefully because the body is a STRING, not an object -
-        // Outlook posts it verbatim.
+        // {{comment.value}} is substituted by Outlook from the input below. The
+        // body is a STRING, not an object - Outlook posts it verbatim, so the
+        // inner quotes are escaped.
         var bodyTemplate =
             $"{{\"token\":\"{token}\",\"verb\":\"{verb}\",\"comment\":\"{{{{comment.value}}}}\"}}";
 
@@ -327,8 +333,8 @@ public sealed class OutlookCardBuilder
                         ["type"] = "Input.Text",
                         ["id"] = "comment",
                         ["isMultiline"] = true,
-                        ["placeholder"] = verb == "reject"
-                            ? "Why are you rejecting this? (optional)"
+                        ["placeholder"] = reasonRequired
+                            ? "Why are you rejecting this? (required)"
                             : "Add a comment (optional)"
                     }
                 },
@@ -357,29 +363,36 @@ public sealed class OutlookCardBuilder
 
     // ------------------------------------------------------------------
 
-    private static void AddFact(JsonArray facts, string title, string? value)
+    /// <summary>
+    /// A TextBlock. Property values are lower-case because Outlook's 1.0
+    /// renderer is stricter about casing than the Teams renderer, and a
+    /// capitalised size is ignored rather than rejected - which looks like a
+    /// styling bug rather than a schema one.
+    /// </summary>
+    private static JsonObject Text(
+        string text,
+        string? size = null,
+        bool bold = false,
+        bool subtle = false,
+        string? colour = null,
+        string? spacing = null,
+        bool separator = false,
+        bool wrap = true)
     {
-        if (string.IsNullOrWhiteSpace(value) || value == "-")
+        var block = new JsonObject
         {
-            return;
-        }
+            ["type"] = "TextBlock",
+            ["text"] = text,
+            ["wrap"] = wrap
+        };
 
-        facts.Add(new JsonObject { ["title"] = title, ["value"] = value });
-    }
+        if (size is not null) block["size"] = size;
+        if (bold) block["weight"] = "bolder";
+        if (subtle) block["isSubtle"] = true;
+        if (colour is not null) block["color"] = colour;
+        if (spacing is not null) block["spacing"] = spacing;
+        if (separator) block["separator"] = true;
 
-    private static string ComposeParty(string? name, string? number)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return number ?? string.Empty;
-        }
-
-        return string.IsNullOrWhiteSpace(number) ? name : $"{name} ({number})";
-    }
-
-    private static string FormatMoney(decimal amount, string? currencyCode)
-    {
-        var formatted = amount.ToString("N2", CultureInfo.InvariantCulture);
-        return string.IsNullOrWhiteSpace(currencyCode) ? formatted : $"{currencyCode} {formatted}";
+        return block;
     }
 }

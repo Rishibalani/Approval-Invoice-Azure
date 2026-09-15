@@ -172,6 +172,149 @@ public sealed class BusinessCentralClient
     }
 
     /// <summary>
+    /// Every approver identity Business Central knows about, for bulk
+    /// provisioning. Read through the identity API page rather than inferred
+    /// from a user list, so suspension and consent come along with it.
+    /// </summary>
+    public async Task<IReadOnlyList<ApproverIdentity>> GetApproverIdentitiesAsync(
+        CancellationToken cancellationToken)
+    {
+        var url = _options.IdentitiesUrl + "?$select=systemId,userId,upn,entraObjectId,suspended";
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(cancellationToken));
+
+            using var response = await _http.SendAsync(request, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError(
+                    "Could not read approver identities: {Status}. Is PN Approver Identity API published?",
+                    (int)response.StatusCode);
+
+                return [];
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("value", out var rows))
+            {
+                return [];
+            }
+
+            var identities = new List<ApproverIdentity>();
+
+            foreach (var row in rows.EnumerateArray())
+            {
+                identities.Add(new ApproverIdentity
+                {
+                    SystemId = Str(row, "systemId"),
+                    UserId = Str(row, "userId"),
+                    Upn = Str(row, "upn"),
+                    EntraObjectId = Str(row, "entraObjectId"),
+                    Suspended = row.TryGetProperty("suspended", out var sus) && sus.GetBoolean()
+                });
+            }
+
+            return identities;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Reading approver identities threw.");
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Writes back an Entra object ID resolved from Graph.
+    ///
+    /// PATCH rather than a bound action: this is a field update, not a
+    /// business operation. The API page makes only that one field writable, so
+    /// there is nothing else a PATCH could disturb.
+    /// </summary>
+    public async Task<bool> SetEntraObjectIdAsync(
+        string userId,
+        string entraObjectId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Filter on userId rather than carrying SystemIds around - the
+            // caller knows who the approver is, not what row they live in.
+            var lookupUrl = _options.IdentitiesUrl +
+                $"?$filter=userId eq '{Uri.EscapeDataString(userId)}'&$select=systemId";
+
+            using var lookup = new HttpRequestMessage(HttpMethod.Get, lookupUrl);
+            lookup.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(cancellationToken));
+
+            using var lookupResponse = await _http.SendAsync(lookup, cancellationToken);
+
+            if (!lookupResponse.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var lookupJson = await lookupResponse.Content.ReadAsStringAsync(cancellationToken);
+            using var lookupDoc = JsonDocument.Parse(lookupJson);
+
+            if (!lookupDoc.RootElement.TryGetProperty("value", out var rows) ||
+                rows.GetArrayLength() == 0)
+            {
+                _logger.LogWarning(
+                    "No approver identity row for {UserId}. Run Import From Approval User Setup first.",
+                    userId);
+
+                return false;
+            }
+
+            var systemId = Str(rows[0], "systemId");
+            var body = JsonSerializer.Serialize(new { entraObjectId });
+
+            using var patch = new HttpRequestMessage(
+                HttpMethod.Patch, $"{_options.IdentitiesUrl}({systemId})")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+
+            patch.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(cancellationToken));
+
+            // Business Central requires an ETag on a PATCH. * accepts whatever
+            // is current, which is right here: one writer, nothing to conflict
+            // with.
+            patch.Headers.IfMatch.Add(new EntityTagHeaderValue("*"));
+
+            using var patchResponse = await _http.SendAsync(patch, cancellationToken);
+
+            if (!patchResponse.IsSuccessStatusCode)
+            {
+                var text = await patchResponse.Content.ReadAsStringAsync(cancellationToken);
+
+                _logger.LogError(
+                    "Writing the object ID for {UserId} failed: {Status} {Body}",
+                    userId, (int)patchResponse.StatusCode, Truncate(text, 300));
+
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Writing the object ID for {UserId} threw.", userId);
+            return false;
+        }
+    }
+
+    private static string Str(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) ? v.GetString() ?? string.Empty : string.Empty;
+
+    /// <summary>
     /// Writes the delivered channel and message ID back to the outbox row, so
     /// the card can be updated in place when the decision lands.
     /// Best-effort: a failure here must never fail a successful send.
@@ -322,4 +465,17 @@ public sealed record BcActionResult
 
     public static BcActionResult Error(string status, bool transient) =>
         new() { Status = status, Succeeded = false, IsTransient = transient };
+}
+
+/// <summary>
+/// One approver, as Business Central knows them. Just enough to provision
+/// against the directory - the full identity record stays in Business Central.
+/// </summary>
+public sealed record ApproverIdentity
+{
+    public string SystemId { get; init; } = string.Empty;
+    public string UserId { get; init; } = string.Empty;
+    public string Upn { get; init; } = string.Empty;
+    public string EntraObjectId { get; init; } = string.Empty;
+    public bool Suspended { get; init; }
 }

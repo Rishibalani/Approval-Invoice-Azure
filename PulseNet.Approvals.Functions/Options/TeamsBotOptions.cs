@@ -37,6 +37,16 @@ public sealed class TeamsBotOptions
     /// </summary>
     public string DefaultServiceUrl { get; set; } = "https://smba.trafficmanager.net/in/";
 
+    /// <summary>
+    /// The "id" from your Teams manifest.
+    ///
+    /// NOT the catalogue app ID - Teams assigns a separate one when the package
+    /// is uploaded, and the install call wants that. GraphDirectoryClient looks
+    /// it up from this value. Passing the wrong one produces a 404 that reads
+    /// as though the app does not exist.
+    /// </summary>
+    public string ManifestId { get; set; } = string.Empty;
+
     /// <summary>Table Storage table holding conversation references.</summary>
     public string ConversationTable { get; set; } = "teamsconversations";
 

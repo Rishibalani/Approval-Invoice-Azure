@@ -46,6 +46,7 @@ public sealed class BotMessagesFunction
     private readonly BusinessCentralClient _bcClient;
     private readonly BotConnectorClient _connector;
     private readonly TeamsBotOptions _options;
+    private readonly OutlookChannelOptions _outlookOptions;
     private readonly ILogger<BotMessagesFunction> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -59,6 +60,7 @@ public sealed class BotMessagesFunction
         BusinessCentralClient bcClient,
         BotConnectorClient connector,
         IOptions<TeamsBotOptions> options,
+        IOptions<ChannelOptions> channelOptions,
         ILogger<BotMessagesFunction> logger)
     {
         _tokenValidator = tokenValidator;
@@ -66,6 +68,12 @@ public sealed class BotMessagesFunction
         _bcClient = bcClient;
         _connector = connector;
         _options = options.Value;
+
+        // The rejection-reason rule is one policy, not one per channel. Reusing
+        // the Outlook flag keeps a single switch rather than two that can
+        // disagree about whether a reason is needed.
+        _outlookOptions = channelOptions.Value.Outlook;
+
         _logger = logger;
     }
 
@@ -146,7 +154,14 @@ public sealed class BotMessagesFunction
             return CardResponse(NoticeCard("This card is missing its approval reference. Please use Business Central."));
         }
 
-        // Teams asserts this. It is not something the card could forge.
+        // Verbs are namespaced - "approval/reject", not "reject" - so that a
+        // future card type cannot collide with these. Matching on the bare word
+        // would silently treat every rejection as an approval, which is the
+        // worst possible way for a mismatch to fail.
+        var isReject = verb.EndsWith("reject", StringComparison.OrdinalIgnoreCase);
+        var isDelegate = verb.EndsWith("delegate", StringComparison.OrdinalIgnoreCase);
+
+        // Teams asserts this. The card cannot forge it.
         var actorObjectId = activity.From?.AadObjectId;
         var actorName = activity.From?.Name ?? "Unknown";
 
@@ -154,9 +169,29 @@ public sealed class BotMessagesFunction
             "Invoke '{Verb}' on entry {EntryNo} from {Actor}.",
             verb, approvalEntryNo, actorName);
 
-        var action = verb.Equals("reject", StringComparison.OrdinalIgnoreCase)
-            ? ApprovalAction.Reject
-            : ApprovalAction.Approve;
+        if (isDelegate)
+        {
+            // Not wired yet. Saying so beats a silent no-op that leaves the
+            // approver believing they have handed the invoice on.
+            return CardResponse(NoticeCard(
+                "Delegation is not available from Teams yet. Please use Business Central."));
+        }
+
+        // The comment typed into the Action.Execute ShowCard. Teams merges the
+        // input values into action.data, so it arrives alongside the card's own
+        // fields rather than separately.
+        var comment = GetString(data, "comment");
+
+        var action = isReject ? ApprovalAction.Reject : ApprovalAction.Approve;
+
+        // Rejection reason enforced here, not on the card. Adaptive Card
+        // isRequired is advisory - a crafted invoke can omit the input
+        // entirely, so the server is the only place this can actually hold.
+        if (isReject && _outlookOptions.RequireRejectionReason && string.IsNullOrWhiteSpace(comment))
+        {
+            return CardResponse(NoticeCard(
+                "Please give a reason for rejecting this invoice, then confirm again."));
+        }
 
         // Business Central re-checks authority, status, amount and the change
         // gates. Nothing here is trusted to have got that right.
@@ -164,9 +199,13 @@ public sealed class BotMessagesFunction
             approvalEntryNo,
             action,
             channel: "Teams",
-            deviceInfo: $"Teams bot ({actorName})",
+            // The Entra object ID goes in the audit trail alongside the name.
+            // A display name can be changed; the object ID is what an auditor
+            // can actually resolve back to a person.
+            deviceInfo: $"Teams bot ({actorName}, {actorObjectId ?? "unknown id"})",
             correlationId: GetString(data, "correlationId") ?? Guid.NewGuid().ToString(),
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            comment: comment);
 
         var verbPast = action == ApprovalAction.Approve ? "Approved" : "Rejected";
         var documentNo = GetString(data, "documentNo") ?? "This invoice";
