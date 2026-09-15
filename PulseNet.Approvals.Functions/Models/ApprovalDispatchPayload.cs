@@ -162,6 +162,19 @@ public sealed record ApproverInfo
     [JsonPropertyName("fallbackChannel")] public string FallbackChannel { get; init; } = "Outlook";
     [JsonPropertyName("channels")] public IReadOnlyList<string> Channels { get; init; } = [];
 
+    /// <summary>E.164 mobile number. WhatsApp only.</summary>
+    [JsonPropertyName("mobileNumber")] public string? MobileNumber { get; init; }
+
+    /// <summary>
+    /// Whether this approver has a recorded consent for WhatsApp processing.
+    ///
+    /// Defaults FALSE, and deliberately so. Transmitting a name, a vendor and
+    /// an amount to a third-party messaging platform needs a recorded basis
+    /// under GDPR and the India DPDP Act - a missing flag must mean "no", not
+    /// "probably fine".
+    /// </summary>
+    [JsonPropertyName("consentGiven")] public bool ConsentGiven { get; init; }
+
     // --- schema 1.1 ---
 
     /// <summary>

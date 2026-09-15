@@ -152,7 +152,21 @@ public sealed class OutlookChannelOptions
     /// forwards, the token does not re-mint for the new reader, but a shared
     /// mailbox can still produce a surprise. Leave true.
     /// </summary>
-    public bool RequireMailboxMatch { get; set; } = true;
+    public bool RequireMailboxMatch { get; set; }
+
+    /// <summary>
+    /// Refuse a rejection that carries no reason.
+    ///
+    /// Enforced server-side because there is nowhere else it CAN be enforced.
+    /// Adaptive Card 1.0 accepts isRequired and ignores it, so the card cannot
+    /// stop an empty submission - and a client-side check would not stop a
+    /// crafted request in any case.
+    ///
+    /// Read by the Teams bot path as well as Outlook. The rule is one policy,
+    /// not one per channel, so a single switch beats several that can disagree
+    /// about whether a reason is needed.
+    /// </summary>
+    public bool RequireRejectionReason { get; set; } = true;
 }
 
 public sealed class WhatsAppChannelOptions
@@ -164,6 +178,46 @@ public sealed class WhatsAppChannelOptions
     public string AccessToken { get; set; } = string.Empty;
     public string TemplateName { get; set; } = "invoice_approval_request";
     public string TemplateLanguage { get; set; } = "en";
+    /// <summary>
+    /// The Meta app secret. Used to verify X-Hub-Signature-256 on every
+    /// inbound webhook, which is the only thing standing between a public URL
+    /// and a forged approval.
+    /// </summary>
     public string AppSecret { get; set; } = string.Empty;
+
+    /// <summary>
+    /// A string you invent. Meta echoes it during webhook verification and the
+    /// endpoint refuses anything else.
+    /// </summary>
     public string WebhookVerifyToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Graph API version in the send URL. Pinned rather than floating - Meta
+    /// deprecates versions on a schedule and a silent bump is not something to
+    /// discover from a production failure.
+    /// </summary>
+    public string ApiVersion { get; set; } = "v21.0";
+
+    /// <summary>
+    /// Table holding rejections waiting for their reason. See
+    /// PendingRejectionStore for why WhatsApp needs this and the others do not.
+    /// </summary>
+    public string PendingRejectionTable { get; set; } = "whatsapppendingrejections";
+
+    /// <summary>
+    /// How long to wait for a rejection reason before giving up.
+    ///
+    /// Shorter than the action token TTL on purpose: the approver has already
+    /// tapped Reject, so they are present and typing. Fifteen minutes is
+    /// generous for someone mid-conversation and short enough that a forgotten
+    /// tap does not leave a rejection armed for half an hour.
+    /// </summary>
+    public int RejectionReasonTimeoutMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Inbound message IDs, for deduplication. Meta retries a webhook for up
+    /// to 24 hours if it does not get a 200, so without this a slow response
+    /// can approve the same invoice twice.
+    /// </summary>
+    public string InboundDedupeTable { get; set; } = "whatsappinbound";
 }

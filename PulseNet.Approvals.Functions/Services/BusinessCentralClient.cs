@@ -69,7 +69,8 @@ public sealed class BusinessCentralClient
         string channel,
         string deviceInfo,
         string correlationId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? comment = null)
     {
         try
         {
@@ -89,7 +90,13 @@ public sealed class BusinessCentralClient
             {
                 channel,
                 device = deviceInfo,
-                correlationId
+                correlationId,
+
+                // Written to an Approval Comment Line by the action handler.
+                // Logging it and dropping it was the gap: the reason was
+                // collected from the approver, shown back to them, and then
+                // existed nowhere an auditor could find it.
+                comment = comment ?? string.Empty
             });
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url)

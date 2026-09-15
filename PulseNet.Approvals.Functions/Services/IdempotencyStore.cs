@@ -41,13 +41,41 @@ public sealed class IdempotencyStore
     /// Attempts to claim an event. Returns true if this is the first sighting
     /// and processing should continue; false if it is a duplicate.
     /// </summary>
+    /// <summary>
+    /// Claims an event in a NAMED table.
+    ///
+    /// WhatsApp inbound messages need their own table rather than sharing the
+    /// dispatch one: the identifiers come from Meta, the retention window is
+    /// different, and mixing them would make either one harder to purge
+    /// without disturbing the other.
+    ///
+    /// Named differently rather than overloaded, because the signature would
+    /// otherwise be identical to TryClaimAsync - parameter names do not
+    /// distinguish overloads in C#, only types do, and two methods taking
+    /// three strings would be a duplicate member.
+    /// </summary>
+    public Task<bool> TryClaimInTableAsync(
+        string eventId,
+        string tableName,
+        string partitionKey,
+        CancellationToken cancellationToken) =>
+        ClaimAsync(eventId, tableName, partitionKey, string.Empty, cancellationToken);
+
     public async Task<bool> TryClaimAsync(
         string eventId,
         string tenantId,
         string correlationId,
+        CancellationToken cancellationToken) =>
+        await ClaimAsync(eventId, _options.IdempotencyTable, tenantId, correlationId, cancellationToken);
+
+    private async Task<bool> ClaimAsync(
+        string eventId,
+        string tableName,
+        string tenantId,
+        string correlationId,
         CancellationToken cancellationToken)
     {
-        var table = _tableService.GetTableClient(_options.IdempotencyTable);
+        var table = _tableService.GetTableClient(tableName);
         await table.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
         // Partitioning on tenant keeps one noisy tenant from hot-spotting

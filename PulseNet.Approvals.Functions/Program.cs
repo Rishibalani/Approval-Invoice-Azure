@@ -207,8 +207,26 @@ builder.Services.AddSingleton<ActionableMessageTokenValidator>();
 builder.Services.AddSingleton<IChannelSender, PlainEmailSender>();
 builder.Services.AddSingleton<IChannelSender, OutlookActionableMessageSender>();
 
-// Later stages add:
-//   builder.Services.AddSingleton<IChannelSender, WhatsAppTemplateSender>();
+// ════════════════════════════════════════════════════════════════════════
+//  CHANNEL: WHATSAPP
+//
+//  The only channel that needs conversational state. A quick-reply button
+//  carries a payload and nothing else, so a rejection reason cannot arrive
+//  with the tap - PendingRejectionStore holds the rejection between the tap
+//  and the reply.
+// ════════════════════════════════════════════════════════════════════════
+
+builder.Services.AddHttpClient<WhatsAppClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddSingleton<PendingRejectionStore>();
+builder.Services.AddSingleton<WhatsAppSignatureValidator>();
+builder.Services.AddSingleton<WhatsAppTemplateSender>();
+
+builder.Services.AddSingleton<IChannelSender>(sp =>
+    sp.GetRequiredService<WhatsAppTemplateSender>());
 
 // ════════════════════════════════════════════════════════════════════════
 //  DISPATCH AND CALLBACK

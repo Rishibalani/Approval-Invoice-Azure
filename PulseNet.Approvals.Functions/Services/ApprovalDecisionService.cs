@@ -50,6 +50,48 @@ public sealed class ApprovalDecisionService
     }
 
     /// <summary>
+    /// Validates a token and reports what it asks for, WITHOUT consuming the
+    /// nonce or touching Business Central.
+    ///
+    /// Exists for WhatsApp. A rejection there is two messages - the tap, then
+    /// the reason - and the tap must not burn the nonce, or the approver
+    /// cannot finish what they started. Peek first, execute when the reason
+    /// arrives.
+    ///
+    /// Every other channel collects the comment in the same interaction and
+    /// goes straight to ExecuteAsync.
+    /// </summary>
+    public async Task<ActionTokenPeek> PeekAsync(string? token, CancellationToken cancellationToken)
+    {
+        var validation = await _tokenService.ValidateAsync(token, cancellationToken);
+
+        if (!validation.IsValid)
+        {
+            return new ActionTokenPeek
+            {
+                IsValid = false,
+                Message = validation.FailureReason switch
+                {
+                    "token_expired" =>
+                        "This approval request has expired. Please open the invoice in Business Central.",
+                    "token_already_used" =>
+                        "This request has already been handled - either by you, or by someone else in the approval chain.",
+                    _ =>
+                        "This button is no longer valid. Please open the invoice in Business Central."
+                }
+            };
+        }
+
+        return new ActionTokenPeek
+        {
+            IsValid = true,
+            ApprovalEntryNo = validation.ApprovalEntryNo,
+            Action = validation.Action,
+            Message = string.Empty
+        };
+    }
+
+    /// <summary>
     /// Executes a decision carried by an action token.
     /// </summary>
     /// <param name="token">The signed action token from the button.</param>
@@ -68,7 +110,9 @@ public sealed class ApprovalDecisionService
         bool requireAssertedIdentity,
         string channel,
         string deviceInfo,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? comment = null,
+        bool requireRejectionReason = false)
     {
         // ---- 1-3. Our own token ---------------------------------------
         var validation = await _tokenService.ValidateAsync(token, cancellationToken);
@@ -124,6 +168,25 @@ public sealed class ApprovalDecisionService
             }
         }
 
+        // ---- 4b. Rejection reason ------------------------------------
+        //
+        // Enforced HERE, not on the card. Adaptive Card 1.0 accepts isRequired
+        // and ignores it, so the card cannot stop an empty submission - and a
+        // client-side check would not stop a crafted request in any case. The
+        // server is the only place this can actually hold.
+        if (requireRejectionReason &&
+            validation.Action == ApprovalAction.Reject &&
+            string.IsNullOrWhiteSpace(comment))
+        {
+            _logger.LogInformation(
+                "Rejection of entry {EntryNo} refused on {Channel}: no reason given.",
+                validation.ApprovalEntryNo, channel);
+
+            return ApprovalDecisionOutcome.Refused(
+                "A reason is required",
+                "Please say why you are rejecting this invoice, then confirm again.");
+        }
+
         // ---- 5. Business Central --------------------------------------
         var result = await _bcClient.ExecuteApprovalAsync(
             validation.ApprovalEntryNo,
@@ -131,7 +194,8 @@ public sealed class ApprovalDecisionService
             channel,
             deviceInfo,
             correlationId: Guid.NewGuid().ToString(),
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            comment: comment);
 
         // ---- 6. Burn, only on success ---------------------------------
         if (result.Succeeded)
@@ -195,4 +259,22 @@ public sealed record ApprovalDecisionOutcome
             ApprovalEntryNo = entryNo,
             Action = action
         };
+}
+
+/// <summary>
+/// What a token asks for, established without committing to it.
+/// </summary>
+public sealed record ActionTokenPeek
+{
+    public required bool IsValid { get; init; }
+    public required string Message { get; init; }
+    public int ApprovalEntryNo { get; init; }
+    public ApprovalAction Action { get; init; }
+
+    /// <summary>
+    /// Not carried by the token - it holds only the entry number, to stay
+    /// inside WhatsApp's 256-character payload. Left null unless a caller
+    /// looks it up.
+    /// </summary>
+    public string? DocumentNo { get; init; }
 }

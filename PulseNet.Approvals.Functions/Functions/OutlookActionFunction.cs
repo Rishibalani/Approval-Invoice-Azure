@@ -120,7 +120,9 @@ public sealed class OutlookActionFunction
             requireAssertedIdentity: _options.Outlook.RequireMailboxMatch,
             channel: "Outlook",
             deviceInfo: "Outlook actionable message",
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            comment: request.Comment,
+            requireRejectionReason: _options.Outlook.RequireRejectionReason);
 
         if (!string.IsNullOrWhiteSpace(request.Comment))
         {
