@@ -140,7 +140,7 @@ public sealed class ActionTokenService
         try
         {
             payload = Encoding.UTF8.GetString(Base64UrlDecode(parts[0]));
-            providedSignature = Base64UrlDecode(parts[1]);
+            providedSignature = DecodeSignature(parts[1]);
         }
         catch (FormatException)
         {
@@ -287,6 +287,52 @@ public sealed class ActionTokenService
 
     private static string Base64UrlEncode(byte[] input) =>
         Convert.ToBase64String(input).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    /// <summary>
+    /// Reads a signature written either as base64url or as hex.
+    ///
+    /// WHY TWO ENCODINGS
+    ///
+    /// This service mints base64url. Business Central mints hex, because AL
+    /// produces a hex HMAC in a single call while producing base64url of a
+    /// TRUNCATED HMAC would mean converting hex to bytes to base64 by hand -
+    /// about thirty lines of bit-shuffling for no behavioural gain.
+    ///
+    /// Both are the same first sixteen bytes of the same HMAC, written
+    /// differently. Accepting both here is a few lines; forcing one encoding
+    /// on AL would be thirty fragile ones there.
+    ///
+    /// Detection is by shape rather than by a flag in the token. A truncated
+    /// signature is always sixteen bytes - exactly thirty-two hex characters,
+    /// or twenty-two base64url characters - so the two cannot be confused and
+    /// no caller has to declare which it used.
+    /// </summary>
+    private static byte[] DecodeSignature(string value)
+    {
+        if (value.Length == SignatureBytes * 2 && IsHex(value))
+        {
+            return Convert.FromHexString(value);
+        }
+
+        return Base64UrlDecode(value);
+    }
+
+    private static bool IsHex(string value)
+    {
+        foreach (var c in value)
+        {
+            var isHexDigit = (c >= '0' && c <= '9')
+                          || (c >= 'a' && c <= 'f')
+                          || (c >= 'A' && c <= 'F');
+
+            if (!isHexDigit)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static byte[] Base64UrlDecode(string input)
     {

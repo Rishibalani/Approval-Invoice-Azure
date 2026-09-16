@@ -74,7 +74,19 @@ public sealed class BusinessCentralClient
     {
         try
         {
-            var systemId = await ResolveSystemIdAsync(approvalEntryNo, cancellationToken);
+            string? systemId;
+
+            try
+            {
+                systemId = await ResolveSystemIdAsync(approvalEntryNo, cancellationToken);
+            }
+            catch (BcUnreachableException ex)
+            {
+                // A configuration fault, not a business outcome. Reported as
+                // such so the approver is told to use Business Central rather
+                // than told their invoice vanished.
+                return BcActionResult.Error(ex.Reason, transient: false);
+            }
 
             if (systemId is null)
             {
@@ -163,7 +175,25 @@ public sealed class BusinessCentralClient
             _logger.LogError(
                 "Could not read approval entry {EntryNo}: {Status}",
                 approvalEntryNo, (int)response.StatusCode);
-            return null;
+
+            // Distinguish "could not ask" from "asked, and it is not there".
+            //
+            // Both used to return null, and the caller reported NOT_FOUND for
+            // both - so a missing permission told the approver their invoice
+            // had been cancelled. They would then go looking for a cancelled
+            // document that does not exist, which is a worse outcome than an
+            // honest error.
+            //
+            // 401 and 403 mean the credentials are wrong or lack rights.
+            // 404 on this URL means the API page is not published.
+            throw new BcUnreachableException(
+                (int)response.StatusCode switch
+                {
+                    401 => "bc_unauthorised",
+                    403 => "bc_forbidden",
+                    404 => "bc_api_page_missing",
+                    _ => "bc_read_failed"
+                });
         }
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -455,6 +485,19 @@ public sealed record BcActionResult
         "BANK_DETAILS_CHANGED" => "The vendor's bank details changed after this invoice was created. Approval must be completed in Business Central after review.",
         "NOT_FOUND" => "This approval request no longer exists. It may have been cancelled or the document posted.",
         "bc_unreachable" => "Business Central could not be reached. Please try again shortly.",
+
+        // Configuration faults. Deliberately NOT phrased as "try again" - no
+        // amount of retrying fixes a missing permission, and telling somebody
+        // to retry just wastes their time before they give up and use the
+        // client anyway.
+        "bc_unauthorised" =>
+            "This approval could not be completed because the connection to Business Central is not authorised. Please approve the invoice in Business Central, and let IT know.",
+        "bc_forbidden" =>
+            "This approval could not be completed because the service account lacks permission in Business Central. Please approve the invoice there, and let IT know.",
+        "bc_api_page_missing" =>
+            "This approval could not be completed because the Business Central approval API is unavailable. Please approve the invoice in Business Central, and let IT know.",
+        "bc_read_failed" =>
+            "This approval could not be completed. Please open the invoice in Business Central.",
         "bc_timeout" => "Business Central did not respond in time. Please try again shortly.",
         _ => "Something went wrong. Please open the invoice in Business Central."
     };
@@ -472,6 +515,23 @@ public sealed record BcActionResult
 
     public static BcActionResult Error(string status, bool transient) =>
         new() { Status = status, Succeeded = false, IsTransient = transient };
+}
+
+/// <summary>
+/// Business Central could not be asked - as distinct from being asked and
+/// having nothing to say.
+///
+/// A separate type because the two produce different advice. "Already handled"
+/// is something the approver can act on; "the integration is misconfigured" is
+/// something only an administrator can.
+/// </summary>
+public sealed class BcUnreachableException : Exception
+{
+    public string Reason { get; }
+
+    public BcUnreachableException(string reason)
+        : base($"Business Central could not be reached: {reason}")
+        => Reason = reason;
 }
 
 /// <summary>
