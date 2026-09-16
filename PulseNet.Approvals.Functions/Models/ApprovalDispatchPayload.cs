@@ -52,6 +52,16 @@ public sealed record ApprovalInfo
     [JsonPropertyName("recordId")] public string RecordId { get; init; } = string.Empty;
     [JsonPropertyName("status")] public string Status { get; init; } = string.Empty;
     [JsonPropertyName("dueDate")] public string? DueDate { get; init; }
+
+    /// <summary>
+    /// When the document was submitted for approval - as distinct from when
+    /// the document itself was created, which can be weeks earlier.
+    ///
+    /// Business Central has been sending this; nothing bound it, so it was
+    /// silently dropped. The card showed the document's creation date under a
+    /// label that read like a submission date.
+    /// </summary>
+    [JsonPropertyName("sentForApprovalOn")] public string? SentForApprovalOn { get; init; }
     [JsonPropertyName("totalStepsInChain")] public int TotalStepsInChain { get; init; }
     [JsonPropertyName("openStepsRemaining")] public int OpenStepsRemaining { get; init; }
     [JsonPropertyName("isFinalStep")] public bool IsFinalStep { get; init; }

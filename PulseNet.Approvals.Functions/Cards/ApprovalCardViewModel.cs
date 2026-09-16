@@ -134,6 +134,12 @@ public sealed record ApprovalCardViewModel
         // row is dropped entirely - this is the floating-bullet fix.
         Add("Requested by", p.Approval.RequesterLabel);
 
+        // WHEN it was submitted, not when the document was created. Those can
+        // be weeks apart, and an approver deciding whether something is urgent
+        // needs the submission date - an invoice raised in March and submitted
+        // yesterday is not a month old in any sense that matters here.
+        Add("Submitted", Timestamp(p.Approval.SentForApprovalOn));
+
         Add("Respond by", Date(p.Approval.DueDate));
 
         return facts;
@@ -152,6 +158,20 @@ public sealed record ApprovalCardViewModel
                     : $"{l.Quantity.ToString("0.##", Ci)} {l.UnitOfMeasure}",
                 Amount: l.LineAmount.ToString("N2", Ci)))
             .ToList();
+    }
+
+    /// <summary>
+    /// A UTC instant rendered for reading. Returns null on anything
+    /// unparseable, so the row is dropped rather than showing a raw ISO string
+    /// to somebody trying to approve an invoice.
+    /// </summary>
+    private static string? Timestamp(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        return DateTimeOffset.TryParse(value, Ci, DateTimeStyles.AssumeUniversal, out var dt)
+            ? dt.UtcDateTime.ToString("dd MMM yyyy HH:mm", Ci) + " UTC"
+            : null;
     }
 
     private static string? BuildCreatedLine(DocumentInfo doc)
