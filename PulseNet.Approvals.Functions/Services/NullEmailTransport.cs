@@ -1,3 +1,32 @@
+// =========================================================================
+//  PRESERVED - NOT IN USE
+// =========================================================================
+//
+//  Business Central now composes and sends approval emails itself, using its
+//  own email module. This file is kept rather than deleted for two reasons.
+//
+//  First, it still works. If Business Central email is ever unavailable in an
+//  environment - or if Actionable Messages become worth their setup cost -
+//  restoring it is a matter of uncommenting this file and its registration in
+//  Program.cs.
+//
+//  Second, it documents what was tried. A reader wondering why the email path
+//  moved to Business Central can see exactly what the Azure version required:
+//  an app registration, admin consent, an Exchange access policy and a shared
+//  mailbox, none of which Business Central needs.
+//
+//  WHAT DID NOT MOVE
+//
+//  The action endpoint. Buttons in a Business-Central-sent email still point
+//  at /api/approvals/act, and Azure still validates the token, burns the
+//  nonce, enforces the rejection reason and calls back. Business Central
+//  composes; Azure decides.
+//
+//  To restore: remove this comment block and the /* */ wrapper below, then
+//  uncomment the matching registration in Program.cs.
+// =========================================================================
+
+/*
 ﻿using Microsoft.Extensions.Logging;
 
 namespace PulseNet.Approvals.Functions.Services;
@@ -28,3 +57,4 @@ public sealed class NullEmailTransport : IEmailTransport
         return Task.FromResult(EmailSendResult.Fail("email_transport_not_configured"));
     }
 }
+*/

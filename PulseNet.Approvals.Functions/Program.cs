@@ -128,8 +128,11 @@ builder.Services.AddSingleton<ApprovalDecisionService>();
 // ════════════════════════════════════════════════════════════════════════
 
 builder.Services.AddSingleton<ApprovalCardBuilder>();
-builder.Services.AddSingleton<OutlookCardBuilder>();
-builder.Services.AddSingleton<ApprovalEmailBuilder>();
+
+// OutlookCardBuilder and ApprovalEmailBuilder are preserved but not
+// registered - Business Central composes its own email now.
+// builder.Services.AddSingleton<OutlookCardBuilder>();
+// builder.Services.AddSingleton<ApprovalEmailBuilder>();
 
 // ════════════════════════════════════════════════════════════════════════
 //  CHANNEL: TEAMS VIA WEBHOOK
@@ -173,18 +176,24 @@ builder.Services.AddSingleton<IChannelSender>(sp =>
     sp.GetRequiredService<TeamsBotSender>());
 
 // ════════════════════════════════════════════════════════════════════════
-//  CHANNEL: OUTLOOK
+//  CHANNEL: OUTLOOK - PRESERVED, NOT IN USE
 //
-//  Transport is chosen by configuration rather than compiled in, because which
-//  one to use is a decision with cost and permission consequences that can
-//  differ per environment.
+//  Business Central now composes and sends approval emails itself, using its
+//  own email module. That removed an app registration, a Global Administrator
+//  consent, an Exchange application access policy and a shared mailbox - none
+//  of which Business Central needs, because it already sends email and has
+//  done since the day it was configured.
 //
-//  Null is the default and returns FAILURE rather than pretending to have
-//  sent. A transport that quietly lies would let the dispatcher mark the
-//  channel delivered and skip the fallback, and nobody would learn the
-//  approver was never told.
+//  Azure still owns the ACTION endpoint. Buttons in a Business-Central-sent
+//  email point at /api/approvals/act, and ApprovalActionFunction still
+//  validates the token, burns the nonce, enforces the rejection reason and
+//  calls back. Only composition and delivery moved.
+//
+//  The files under Channels, Cards, Services and Security are commented out
+//  rather than deleted. To restore: uncomment them and this block.
 // ════════════════════════════════════════════════════════════════════════
 
+/*
 builder.Services.AddHttpClient<GraphEmailTransport>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(30);
@@ -202,10 +211,13 @@ builder.Services.AddSingleton<IEmailTransport>(sp =>
     };
 });
 
+builder.Services.AddSingleton<OutlookCardBuilder>();
+builder.Services.AddSingleton<ApprovalEmailBuilder>();
 builder.Services.AddSingleton<ActionableMessageTokenValidator>();
 
 builder.Services.AddSingleton<IChannelSender, PlainEmailSender>();
 builder.Services.AddSingleton<IChannelSender, OutlookActionableMessageSender>();
+*/
 
 // ════════════════════════════════════════════════════════════════════════
 //  CHANNEL: WHATSAPP
