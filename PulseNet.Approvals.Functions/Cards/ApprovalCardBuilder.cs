@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Options;
+using PulseNet.Approvals.Functions.Options;
 using PulseNet.Approvals.Functions.Models;
 
 namespace PulseNet.Approvals.Functions.Cards;
@@ -26,6 +28,10 @@ namespace PulseNet.Approvals.Functions.Cards;
 /// </summary>
 public sealed class ApprovalCardBuilder
 {
+    private readonly ChannelOptions _options;
+
+    public ApprovalCardBuilder(IOptions<ChannelOptions> options) => _options = options.Value;
+
     private const string AdaptiveCardSchema = "http://adaptivecards.io/schemas/adaptive-card.json";
 
     /// <summary>
@@ -49,14 +55,47 @@ public sealed class ApprovalCardBuilder
             ["type"] = "AdaptiveCard",
             ["$schema"] = AdaptiveCardSchema,
             ["version"] = AdaptiveCardVersion,
-            ["msteams"] = new JsonObject { ["width"] = "Full" },
+
+            // WHAT A CLIENT SHOWS WHEN IT CANNOT RENDER THE CARD.
+            //
+            // Not optional, and its absence is invisible until somebody opens
+            // Teams on a phone. A client that cannot render an Adaptive Card
+            // falls back to this text - and with no fallbackText it shows
+            // NOTHING AT ALL. The message appears in the conversation as an
+            // empty space with a timestamp, which looks like a bug in the
+            // integration rather than a rendering limit.
+            //
+            // Mobile Teams lags desktop on Adaptive Card support by several
+            // versions, so the desktop card rendering perfectly proves very
+            // little about the phone.
+            //
+            // The text carries the facts that matter plus where to go, so an
+            // approver on an unsupported client is inconvenienced rather than
+            // stuck.
+            ["fallbackText"] = BuildFallbackText(vm),
+
             ["body"] = BuildBody(vm, payload),
             ["actions"] = BuildActions(vm, payload, actionMode, approveUrl, rejectUrl)
         };
 
+        // Full-width is a desktop nicety and a known source of mobile
+        // rendering trouble. Off by default; turn it on only if the phones in
+        // use are known to handle it.
+        if (_options.Teams.UseFullWidthCard)
+        {
+            card["msteams"] = new JsonObject { ["width"] = "Full" };
+        }
+
         // Auto-refresh needs a bot to answer the invoke, and Teams ignores the
         // block when userIds is empty. Both conditions must hold.
-        if (actionMode == ChannelActionMode.Native &&
+        //
+        // Also gated on configuration, because `refresh` is Adaptive Card 1.4
+        // and an older mobile client that cannot parse it may drop the whole
+        // card rather than just the refresh block. The card now updates itself
+        // through CardRefreshService when a decision lands, so this block is a
+        // secondary path rather than the only one.
+        if (_options.Teams.UseCardRefreshBlock &&
+            actionMode == ChannelActionMode.Native &&
             !string.IsNullOrWhiteSpace(payload.Approver.EntraObjectId))
         {
             card["refresh"] = new JsonObject
@@ -453,6 +492,31 @@ public sealed class ApprovalCardBuilder
                 }
             }
         };
+    }
+
+    /// <summary>
+    /// Plain text for a client that cannot render the card.
+    ///
+    /// Enough to decide whether to act now or later, and where to go. No
+    /// markdown - a client that cannot render a card will not render markdown
+    /// either, and asterisks around a vendor name read as a fault.
+    /// </summary>
+    private static string BuildFallbackText(ApprovalCardViewModel vm)
+    {
+        var lines = new List<string>
+        {
+            $"{vm.TypeCaption}: {vm.DocumentNo}",
+            $"{vm.PartyName} - {vm.HeadlineAmount}"
+        };
+
+        if (vm.ChainContext is not null)
+        {
+            lines.Add(vm.ChainContext);
+        }
+
+        lines.Add("Open the invoice in Business Central to approve or reject.");
+
+        return string.Join("\n", lines);
     }
 
     private static JsonObject ActionData(ApprovalDispatchPayload payload) =>

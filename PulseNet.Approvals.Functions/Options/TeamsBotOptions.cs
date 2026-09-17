@@ -47,6 +47,12 @@ public sealed class TeamsBotOptions
     /// </summary>
     public string ManifestId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Table holding which Teams message carried which approval, so a card
+    /// can be replaced once a decision is made anywhere.
+    /// </summary>
+    public string SentCardTable { get; set; } = "teamssentcards";
+
     /// <summary>Table Storage table holding conversation references.</summary>
     public string ConversationTable { get; set; } = "teamsconversations";
 

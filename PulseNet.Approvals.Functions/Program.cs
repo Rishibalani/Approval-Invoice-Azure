@@ -169,6 +169,8 @@ builder.Services.AddHttpClient<GraphDirectoryClient>(client =>
 });
 
 builder.Services.AddSingleton<ConversationReferenceStore>();
+builder.Services.AddSingleton<SentCardStore>();
+builder.Services.AddSingleton<CardRefreshService>();
 builder.Services.AddSingleton<BotFrameworkTokenValidator>();
 builder.Services.AddSingleton<TeamsBotSender>();
 

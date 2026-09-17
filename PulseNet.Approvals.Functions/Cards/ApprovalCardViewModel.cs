@@ -140,7 +140,10 @@ public sealed record ApprovalCardViewModel
         // yesterday is not a month old in any sense that matters here.
         Add("Submitted", Timestamp(p.Approval.SentForApprovalOn));
 
-        Add("Respond by", Date(p.Approval.DueDate));
+        // "Respond by" removed. It duplicated the invoice Due date closely
+        // enough to be read as the same thing, and an approver comparing two
+        // dates that mean different things is worse served than one shown a
+        // single date that matters.
 
         return facts;
     }
@@ -170,7 +173,7 @@ public sealed record ApprovalCardViewModel
         if (string.IsNullOrWhiteSpace(value)) return null;
 
         return DateTimeOffset.TryParse(value, Ci, DateTimeStyles.AssumeUniversal, out var dt)
-            ? dt.UtcDateTime.ToString("dd MMM yyyy HH:mm", Ci) + " UTC"
+            ? dt.UtcDateTime.ToString("MM/dd/yy HH:mm", Ci) + " UTC"
             : null;
     }
 
@@ -178,7 +181,7 @@ public sealed record ApprovalCardViewModel
     {
         var name = Trim(doc.CreatedByName);
         var when = DateTimeOffset.TryParse(doc.CreatedUtc, Ci, DateTimeStyles.AssumeUniversal, out var dt)
-            ? dt.UtcDateTime.ToString("dd MMM yyyy HH:mm", Ci) + " UTC"
+            ? dt.UtcDateTime.ToString("MM/dd/yy HH:mm", Ci) + " UTC"
             : null;
 
         return (name, when) switch
@@ -205,7 +208,7 @@ public sealed record ApprovalCardViewModel
     {
         if (string.IsNullOrWhiteSpace(isoDate)) return null;
         return DateTime.TryParse(isoDate, Ci, DateTimeStyles.None, out var d)
-            ? d.ToString("dd MMM yyyy", Ci)
+            ? d.ToString("MM/dd/yy", Ci)
             : isoDate;
     }
 

@@ -30,6 +30,7 @@ public sealed class ApprovalDispatchWorker
     private readonly ChannelDispatcher _dispatcher;
     private readonly BusinessCentralClient _bcClient;
     private readonly IdempotencyStore _idempotencyStore;
+    private readonly CardRefreshService _cardRefresh;
     private readonly ILogger<ApprovalDispatchWorker> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -41,11 +42,13 @@ public sealed class ApprovalDispatchWorker
         ChannelDispatcher dispatcher,
         BusinessCentralClient bcClient,
         IdempotencyStore idempotencyStore,
+        CardRefreshService cardRefresh,
         ILogger<ApprovalDispatchWorker> logger)
     {
         _dispatcher = dispatcher;
         _bcClient = bcClient;
         _idempotencyStore = idempotencyStore;
+        _cardRefresh = cardRefresh;
         _logger = logger;
     }
 
@@ -87,12 +90,20 @@ public sealed class ApprovalDispatchWorker
         // them is honest: we know, and there is nothing yet to update.
         if (payload.EventType != "Requested")
         {
+            // A decision was made somewhere - here, in another channel, or in
+            // Business Central. Replace the card so it stops looking like it
+            // is waiting for one.
+            //
+            // Teams only. An email that has left cannot be changed, and a
+            // second email would be worse than a stale one.
             _logger.LogInformation(
-                "{EventType} for {DocumentNo}. Card retirement arrives with bot mode.",
+                "{EventType} for {DocumentNo}. Refreshing any card already sent.",
                 payload.EventType, payload.Document.DocumentNo);
 
+            await _cardRefresh.RefreshAsync(payload, cancellationToken);
+
             await _idempotencyStore.MarkCompletedAsync(
-                payload.EventId, payload.Source.TenantId, "StatusEventLogged", cancellationToken);
+                payload.EventId, payload.Source.TenantId, "CardRefreshed", cancellationToken);
 
             return;
         }

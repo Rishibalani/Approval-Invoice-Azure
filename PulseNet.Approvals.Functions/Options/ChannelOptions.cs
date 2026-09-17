@@ -61,6 +61,27 @@ public sealed class TeamsChannelOptions
     /// </summary>
     public WebhookPayloadMode PayloadMode { get; set; } = WebhookPayloadMode.FlowRouted;
 
+    /// <summary>
+    /// Full-width cards. A desktop nicety and a known source of mobile
+    /// rendering trouble, so off by default. Turn on only if the phones in use
+    /// are known to handle it.
+    /// </summary>
+    public bool UseFullWidthCard { get; set; }
+
+    /// <summary>
+    /// The Adaptive Card `refresh` block, which lets a card re-fetch itself
+    /// when reopened.
+    ///
+    /// Off by default. It is Adaptive Card 1.4, and a mobile client that
+    /// cannot parse it may drop the WHOLE CARD rather than just the refresh -
+    /// which renders as an empty message with a timestamp and no error
+    /// anywhere.
+    ///
+    /// Cards now update themselves through CardRefreshService when a decision
+    /// lands, so this is a secondary path rather than the only one.
+    /// </summary>
+    public bool UseCardRefreshBlock { get; set; }
+
     // Bot mode. Unused until DeliveryMode is Bot.
     public string BotAppId { get; set; } = string.Empty;
     public string BotAppPassword { get; set; } = string.Empty;

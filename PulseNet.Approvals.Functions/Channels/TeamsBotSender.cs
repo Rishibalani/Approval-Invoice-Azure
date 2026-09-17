@@ -39,6 +39,7 @@ public sealed class TeamsBotSender : IChannelSender
 {
     private readonly BotConnectorClient _connector;
     private readonly ConversationReferenceStore _conversations;
+    private readonly SentCardStore _sentCards;
     private readonly ApprovalCardBuilder _cardBuilder;
     private readonly TeamsBotOptions _options;
     private readonly ILogger<TeamsBotSender> _logger;
@@ -49,12 +50,14 @@ public sealed class TeamsBotSender : IChannelSender
     public TeamsBotSender(
         BotConnectorClient connector,
         ConversationReferenceStore conversations,
+        SentCardStore sentCards,
         ApprovalCardBuilder cardBuilder,
         IOptions<TeamsBotOptions> options,
         ILogger<TeamsBotSender> logger)
     {
         _connector = connector;
         _conversations = conversations;
+        _sentCards = sentCards;
         _cardBuilder = cardBuilder;
         _options = options.Value;
         _logger = logger;
@@ -110,9 +113,19 @@ public sealed class TeamsBotSender : IChannelSender
                 "Teams card sent to {Approver} for {DocumentNo}, activity {ActivityId}.",
                 payload.Approver.UserId, payload.Document.DocumentNo, activityId);
 
-            // The activity ID is what makes an in-place update possible when
-            // the approval is decided. Composed with the conversation ID
-            // because updating needs both.
+            // Recorded so the card can be replaced when the approval is
+            // decided - here, in another channel, or in Business Central
+            // itself. Without this the card stays live-looking until somebody
+            // presses a button and is told it was already handled.
+            await _sentCards.SaveAsync(new SentCard
+            {
+                ApprovalEntryNo = payload.Approval.ApprovalEntryNo,
+                ConversationId = conversationId,
+                ActivityId = activityId,
+                ServiceUrl = serviceUrl,
+                DocumentNo = payload.Document.DocumentNo
+            }, cancellationToken);
+
             return ChannelSendResult.Ok(Channel, $"{conversationId}|{activityId}");
         }
         catch (Exception ex)
