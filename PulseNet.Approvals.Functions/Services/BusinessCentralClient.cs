@@ -98,6 +98,16 @@ public sealed class BusinessCentralClient
             var actionName = action == ApprovalAction.Approve ? "approve" : "reject";
             var url = $"{_options.ApprovalEntriesUrl}({systemId})/Microsoft.NAV.{actionName}";
 
+            // Everything the audit line needs travels WITH the decision, in
+            // one call.
+            //
+            // There are setActionContext and setActionComment actions on the
+            // page, and they publish - parameters were never the problem, only
+            // WebServiceActionContext was. But they are useless to an OData
+            // caller: every OData request creates a fresh page instance, so a
+            // value set by one call is gone by the next. Calling them first
+            // would record an approval with no channel, no device and no
+            // comment, and nothing would report a fault.
             var body = JsonSerializer.Serialize(new
             {
                 channel,
@@ -105,8 +115,8 @@ public sealed class BusinessCentralClient
                 correlationId,
 
                 // Written to an Approval Comment Line by the action handler.
-                // Logging it and dropping it was the gap: the reason was
-                // collected from the approver, shown back to them, and then
+                // Logging it and dropping it was the earlier gap: the reason
+                // was collected from the approver, shown back to them, and then
                 // existed nowhere an auditor could find it.
                 comment = comment ?? string.Empty
             });
