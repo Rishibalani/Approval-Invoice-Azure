@@ -287,6 +287,56 @@ public sealed class BotConnectorClient
         }
     }
 
+    /// <summary>
+    /// The other direction: an Entra object ID to a user principal name.
+    ///
+    /// Needed because Teams tells us who somebody is by object ID, while
+    /// Business Central knows them by email. Called once when a person first
+    /// interacts with the bot, never again.
+    /// </summary>
+    public async Task<string?> TryResolveUpnAsync(string aadObjectId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_options.GraphClientId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(aadObjectId)}?$select=userPrincipalName,mail";
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(TeamsBotOptions.GraphScope, cancellationToken));
+
+            using var response = await _http.SendAsync(request, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Graph could not resolve {ObjectId}: {Status}", aadObjectId, (int)response.StatusCode);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+
+            // userPrincipalName is the sign-in address and is always present.
+            // mail can be absent, or be a different address entirely.
+            if (doc.RootElement.TryGetProperty("userPrincipalName", out var upn))
+            {
+                return upn.GetString();
+            }
+
+            return doc.RootElement.TryGetProperty("mail", out var mail) ? mail.GetString() : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Resolving a UPN for {ObjectId} threw.", aadObjectId);
+            return null;
+        }
+    }
+
     // ------------------------------------------------------------------
     //  Tokens
     // ------------------------------------------------------------------

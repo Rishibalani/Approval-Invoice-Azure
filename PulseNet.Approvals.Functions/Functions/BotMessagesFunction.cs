@@ -308,6 +308,60 @@ public sealed class BotMessagesFunction
             TenantId = activity.ChannelData?.Tenant?.Id ?? activity.Conversation?.TenantId ?? _options.TenantId,
             DisplayName = activity.From?.Name
         }, cancellationToken);
+
+        // Tell Business Central who this is, so it never has to be looked up
+        // again.
+        //
+        // Teams hands us the Entra object ID with every activity, free and
+        // without any permission - it is Microsoft asserting the identity of
+        // the person who just interacted. Business Central cannot work this
+        // out for itself, and without it every Teams notification pays a
+        // Microsoft Graph lookup, which is the only part of Teams delivery
+        // needing a consented permission.
+        //
+        // Best-effort. A failure here costs a Graph call later, not a message.
+        await CacheObjectIdAsync(activity, aadObjectId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Records this person's Entra object ID in Business Central.
+    ///
+    /// Matched on email rather than name, because the Business Central user id
+    /// and the Teams display name are unrelated strings - "PATELK" and
+    /// "Khushil Patel" share nothing a lookup could use.
+    /// </summary>
+    private async Task CacheObjectIdAsync(
+        BotActivity activity, string aadObjectId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Teams does not put the email on an activity, so it has to be
+            // resolved. The object ID is what we have, and Graph turns it into
+            // a user principal name.
+            var upn = await _connector.TryResolveUpnAsync(aadObjectId, cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(upn))
+            {
+                _logger.LogInformation(
+                    "Could not resolve an email for {ObjectId}; leaving the Business Central cache alone.",
+                    aadObjectId);
+
+                return;
+            }
+
+            var written = await _bcClient.SetEntraObjectIdByEmailAsync(
+                upn, aadObjectId, cancellationToken);
+
+            if (written)
+            {
+                _logger.LogInformation(
+                    "Cached the Entra object ID for {Upn} in Business Central.", upn);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not cache the Entra object ID. Not fatal.");
+        }
     }
 
     /// <summary>

@@ -358,6 +358,79 @@ public sealed class BusinessCentralClient
         }
     }
 
+    /// <summary>
+    /// Writes back an Entra object ID, matching the approver on email.
+    ///
+    /// Matched on email rather than user id because that is what the Teams
+    /// side knows. The Business Central user id and the Teams display name are
+    /// unrelated strings - "PATELK" and "Khushil Patel" share nothing a lookup
+    /// could use.
+    /// </summary>
+    public async Task<bool> SetEntraObjectIdByEmailAsync(
+        string email,
+        string entraObjectId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var lookupUrl = _options.IdentitiesUrl +
+                $"?$filter=upn eq '{Uri.EscapeDataString(email)}'&$select=systemId,entraObjectId";
+
+            using var lookup = new HttpRequestMessage(HttpMethod.Get, lookupUrl);
+            lookup.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(cancellationToken));
+
+            using var lookupResponse = await _http.SendAsync(lookup, cancellationToken);
+
+            if (!lookupResponse.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var lookupJson = await lookupResponse.Content.ReadAsStringAsync(cancellationToken);
+            using var lookupDoc = JsonDocument.Parse(lookupJson);
+
+            if (!lookupDoc.RootElement.TryGetProperty("value", out var rows) ||
+                rows.GetArrayLength() == 0)
+            {
+                // No approver with that email. Normal - not everyone who talks
+                // to the bot is an approver.
+                return false;
+            }
+
+            var existing = Str(rows[0], "entraObjectId");
+
+            // Already recorded. Skipping saves a write and keeps the audit of
+            // who last touched the row meaningful.
+            if (!string.IsNullOrWhiteSpace(existing) &&
+                !existing.StartsWith("00000000", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            var systemId = Str(rows[0], "systemId");
+            var body = JsonSerializer.Serialize(new { entraObjectId });
+
+            using var patch = new HttpRequestMessage(
+                HttpMethod.Patch, $"{_options.IdentitiesUrl}({systemId})")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+
+            patch.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetTokenAsync(cancellationToken));
+            patch.Headers.IfMatch.Add(new EntityTagHeaderValue("*"));
+
+            using var patchResponse = await _http.SendAsync(patch, cancellationToken);
+            return patchResponse.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Caching the object ID for {Email} threw.", email);
+            return false;
+        }
+    }
+
     private static string Str(JsonElement element, string name) =>
         element.TryGetProperty(name, out var v) ? v.GetString() ?? string.Empty : string.Empty;
 
@@ -490,9 +563,21 @@ public sealed record BcActionResult
         "OK" => "Done. The decision has been recorded in Business Central.",
         "ALREADY_PROCESSED" => "This request has already been handled - either by you on another device, or by someone else in the approval chain.",
         "NOT_APPROVER" => "This approval is not assigned to you.",
-        "AMOUNT_CHANGED" => "The amount on this invoice changed after you were notified. Please review it in Business Central.",
+        "AMOUNT_CHANGED" =>
+            "The amount on this invoice changed after you were notified, so the figure you saw is no longer what you would be approving. " +
+            "Please open it in Business Central and approve there if the new amount is correct.",
         "DOCUMENT_CHANGED" => "This invoice was edited after you were notified. Please review it in Business Central before approving.",
-        "BANK_DETAILS_CHANGED" => "The vendor's bank details changed after this invoice was created. Approval must be completed in Business Central after review.",
+        // The most serious of the refusals, and the one that most deserves a
+        // specific message. "Something changed, go and look" invites a shrug;
+        // naming the bank details and saying why it matters does not.
+        //
+        // Wording says "after you were notified", not "after the invoice was
+        // created" - the check now compares against the moment the card was
+        // sent, which is the window that matters.
+        "BANK_DETAILS_CHANGED" =>
+            "This vendor's bank details were changed after you were notified, so the payment may now go somewhere different. " +
+            "Approval has been stopped. Please open the invoice in Business Central, check the bank details against something you trust, " +
+            "and approve there if they are correct.",
         "NOT_FOUND" => "This approval request no longer exists. It may have been cancelled or the document posted.",
         "bc_unreachable" => "Business Central could not be reached. Please try again shortly.",
 
