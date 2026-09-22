@@ -57,7 +57,7 @@ public sealed class ProvisionApproversFunction
 
     [Function(nameof(ProvisionApprovers))]
     public async Task<IActionResult> ProvisionApprovers(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "admin/provision-approvers")]
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "provisioning/approvers")] // "admin/..." is reserved by the Functions host
         HttpRequest req,
         CancellationToken cancellationToken)
     {

@@ -228,11 +228,13 @@ public sealed class ChannelDispatcher
                 // silently disable Reject.
                 approveUrl = _tokenService.BuildActionUrl(
                     _options.ActionEndpointBaseUrl,
-                    _tokenService.Mint(payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Approve));
+                    _tokenService.Mint(payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Approve,
+                        payload.Policy.ActionTokensExpire));
 
                 rejectUrl = _tokenService.BuildActionUrl(
                     _options.ActionEndpointBaseUrl,
-                    _tokenService.Mint(payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Reject));
+                    _tokenService.Mint(payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Reject,
+                        payload.Policy.ActionTokensExpire));
             }
         }
 

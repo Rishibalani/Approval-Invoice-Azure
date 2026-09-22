@@ -216,9 +216,25 @@ public sealed record PolicyInfo
     [JsonPropertyName("bankDetailsChanged")] public bool BankDetailsChanged { get; init; }
     /// <summary>
     /// Business Central's view of the button lifetime, informational only. The
-    /// TTL actually minted into tokens is ActionToken:TtlMinutes.
+    /// TTL actually minted into tokens is ActionToken:TtlMinutes. 0 when link
+    /// expiry is switched off.
     /// </summary>
     [JsonPropertyName("actionTokenTtlMinutes")] public int ActionTokenTtlMinutes { get; init; }
+
+    /// <summary>
+    /// Business Central's global "Action Link Expiry Enabled" switch. False:
+    /// buttons are minted without an expiry and stay usable until the approval
+    /// is decided. Null only on payloads from an extension older than 1.0.0.4,
+    /// which always expired its links - see ActionTokensExpire.
+    /// </summary>
+    [JsonPropertyName("actionTokenExpiryEnabled")] public bool? ActionTokenExpiryEnabled { get; init; }
+
+    /// <summary>
+    /// Whether tokens minted for this payload expire. A payload that predates
+    /// the switch keeps the behaviour it was built with (expiring) - the safe
+    /// reading of a missing security field is the stricter one.
+    /// </summary>
+    [JsonIgnore] public bool ActionTokensExpire => ActionTokenExpiryEnabled ?? true;
     [JsonPropertyName("requiresSignedInApproval")] public bool RequiresSignedInApproval { get; init; }
 
     /// <summary>Set false to hide Delegate even when a substitute exists.</summary>

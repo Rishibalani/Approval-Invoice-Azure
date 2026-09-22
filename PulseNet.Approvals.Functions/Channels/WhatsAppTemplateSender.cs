@@ -134,10 +134,12 @@ public sealed class WhatsAppTemplateSender : IChannelSender
                 // exactly why the action token is a compact signed string
                 // rather than a JWT.
                 quickReplyPayloads.Add(_tokenService.Mint(
-                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn ?? mobile, ApprovalAction.Approve));
+                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn ?? mobile, ApprovalAction.Approve,
+                    payload.Policy.ActionTokensExpire));
 
                 quickReplyPayloads.Add(_tokenService.Mint(
-                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn ?? mobile, ApprovalAction.Reject));
+                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn ?? mobile, ApprovalAction.Reject,
+                    payload.Policy.ActionTokensExpire));
 
                 foreach (var p in quickReplyPayloads)
                 {

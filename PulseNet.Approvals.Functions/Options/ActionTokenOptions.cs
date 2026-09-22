@@ -22,12 +22,10 @@ public sealed class ActionTokenOptions
     public string SigningSecret { get; set; } = string.Empty;
 
     /// <summary>
-    /// How long a button stays live, in minutes. Short enough that a
-    /// screenshot in a group chat is worthless by the time it spreads.
-    ///
-    /// Capped at 1440 (one day) because the burned-nonce lookup only checks
-    /// today's and yesterday's daily partitions - a longer TTL could let a
-    /// token outlive the partition its nonce was burned into.
+    /// How long a button stays live, in minutes, when Business Central's
+    /// "Action Link Expiry Enabled" is on. Ignored for tokens minted with
+    /// expiry switched off - those never expire. Capped at 1440 to match
+    /// Business Central's Action Link Lifetime field.
     /// </summary>
     [Range(1, 1440, ErrorMessage = "ActionToken__TtlMinutes must be > 0 and <= 1440.")]
     public int TtlMinutes { get; set; }

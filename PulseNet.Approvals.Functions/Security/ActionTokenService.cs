@@ -27,14 +27,25 @@ namespace PulseNet.Approvals.Functions.Security;
 /// format is positional and terse, and the signature is truncated to 16 bytes.
 ///
 /// Truncating an HMAC to 128 bits is fine here: forging one requires 2^128
-/// work, and the token expires after ActionToken:TtlMinutes regardless. The nonce store
-/// means even a valid token only works once.
+/// work, and - when Business Central's "Action Link Expiry Enabled" is on - the
+/// token expires after ActionToken:TtlMinutes. The nonce store means even a
+/// valid token only works once.
+///
+/// NON-EXPIRING TOKENS
+///
+/// When Business Central turns link expiry off (policy.actionTokenExpiryEnabled
+/// = false), tokens are minted with expiryUnix = 0, meaning "never expires".
+/// The field is inside the signed payload, so an expiring token cannot be
+/// turned into a non-expiring one without the secret. The button then stays
+/// usable until the approval entry is decided; Business Central's status guard
+/// (ALREADY_PROCESSED) and the nonce store stop it working twice.
 ///
 /// FORMAT
 ///
 ///   base64url(payload) "." base64url(hmac-sha256(payload)[0..16])
 ///
 ///   payload = 1.{entryNo}.{approverHash}.{nonce}.{expiryUnix}.{A|R}
+///   expiryUnix = 0 means the token never expires.
 ///
 /// Roughly 90 characters end to end. Comfortably inside 256, with headroom.
 ///
@@ -48,6 +59,12 @@ namespace PulseNet.Approvals.Functions.Security;
 /// </summary>
 public sealed class ActionTokenService
 {
+    /// <summary>
+    /// expiryUnix value meaning "never expires". Wire contract with Business
+    /// Central's PN Approval Action Token codeunit - both sides must agree.
+    /// </summary>
+    public const long NoExpiry = 0;
+
     /// <summary>
     /// Query-string parameter carrying the token on a Link-mode URL. A contract
     /// between BuildActionUrl and ApprovalActionFunction, not a setting.
@@ -80,7 +97,12 @@ public sealed class ActionTokenService
     /// Approve and Reject get separate tokens with separate nonces, so burning
     /// one does not silently disable the other.
     /// </summary>
-    public string Mint(int approvalEntryNo, string approverUpn, ApprovalAction action)
+    /// <param name="expires">
+    /// Business Central's "Action Link Expiry Enabled" (policy.actionTokenExpiryEnabled).
+    /// True: the token expires after ActionToken:TtlMinutes. False: it never
+    /// expires and stays usable until the approval is decided.
+    /// </param>
+    public string Mint(int approvalEntryNo, string approverUpn, ApprovalAction action, bool expires)
     {
         if (string.IsNullOrWhiteSpace(_options.SigningSecret))
         {
@@ -89,7 +111,9 @@ public sealed class ActionTokenService
         }
 
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
-        var expiry = DateTimeOffset.UtcNow.AddMinutes(_options.TtlMinutes).ToUnixTimeSeconds();
+        var expiry = expires
+            ? DateTimeOffset.UtcNow.AddMinutes(_options.TtlMinutes).ToUnixTimeSeconds()
+            : NoExpiry;
 
         var payload = string.Join('.',
             TokenVersion,
@@ -187,7 +211,15 @@ public sealed class ActionTokenService
         var action = fields[5] == "A" ? ApprovalAction.Approve : ApprovalAction.Reject;
 
         // ---- Expiry ----------------------------------------------------
-        if (DateTimeOffset.FromUnixTimeSeconds(expiryUnix) < DateTimeOffset.UtcNow)
+        // NoExpiry (0) is a signed statement from the minter that this link
+        // does not expire. Anything else negative is malformed.
+        if (expiryUnix < NoExpiry)
+        {
+            return ActionTokenValidation.Invalid("malformed_token");
+        }
+
+        if (expiryUnix != NoExpiry &&
+            DateTimeOffset.FromUnixTimeSeconds(expiryUnix) < DateTimeOffset.UtcNow)
         {
             // Expected and routine - somebody opened an old notification.
             // Information, not a warning; this is not an attack signal.
@@ -196,7 +228,7 @@ public sealed class ActionTokenService
         }
 
         // ---- Replay ----------------------------------------------------
-        if (await IsNonceBurnedAsync(nonce, cancellationToken))
+        if (await IsNonceBurnedAsync(entryNo, nonce, cancellationToken))
         {
             _logger.LogInformation("Action token already used for entry {EntryNo}.", entryNo);
             return ActionTokenValidation.Invalid("token_already_used");
@@ -226,7 +258,9 @@ public sealed class ActionTokenService
         var table = _tableService.GetTableClient(_options.NonceTable);
         await table.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
-        var entity = new TableEntity(DateTime.UtcNow.ToString("yyyyMMdd"), nonce)
+        // Partitioned by approval entry, not by day: a non-expiring token can
+        // be pressed weeks later, and its burned nonce must still be found.
+        var entity = new TableEntity(NoncePartition(entryNo), nonce)
         {
             ["EntryNo"] = entryNo,
             ["BurnedUtc"] = DateTime.UtcNow
@@ -243,33 +277,27 @@ public sealed class ActionTokenService
         }
     }
 
-    private async Task<bool> IsNonceBurnedAsync(string nonce, CancellationToken cancellationToken)
+    private async Task<bool> IsNonceBurnedAsync(int entryNo, string nonce, CancellationToken cancellationToken)
     {
         var table = _tableService.GetTableClient(_options.NonceTable);
         await table.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
-        // A token lives ActionToken:TtlMinutes, validated at startup to be at
-        // most one day, so it can only ever appear in today's or yesterday's
-        // partition. Checking two partitions beats a table scan.
-        foreach (var partition in new[]
-                 {
-                     DateTime.UtcNow.ToString("yyyyMMdd"),
-                     DateTime.UtcNow.AddDays(-1).ToString("yyyyMMdd")
-                 })
+        // One point read, whatever the token's age. The entry number comes
+        // from the signed payload, so a caller cannot steer the lookup.
+        try
         {
-            try
-            {
-                await table.GetEntityAsync<TableEntity>(partition, nonce, cancellationToken: cancellationToken);
-                return true;
-            }
-            catch (RequestFailedException ex) when (ex.Status == 404)
-            {
-                // Not in this partition. Keep looking.
-            }
+            await table.GetEntityAsync<TableEntity>(
+                NoncePartition(entryNo), nonce, cancellationToken: cancellationToken);
+            return true;
         }
-
-        return false;
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return false;
+        }
     }
+
+    private static string NoncePartition(int entryNo) =>
+        entryNo.ToString(CultureInfo.InvariantCulture);
 
     // ------------------------------------------------------------------
     //  Primitives
