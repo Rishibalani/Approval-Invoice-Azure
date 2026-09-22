@@ -24,18 +24,24 @@ namespace PulseNet.Approvals.Functions.Security;
 /// SIGNING KEYS ARE FETCHED, NOT CONFIGURED
 ///
 /// Microsoft rotates the Bot Framework signing keys. They are published at a
-/// well-known OpenID metadata endpoint, which the configuration manager below
-/// fetches and caches, refreshing on its own schedule. Pinning a key would
-/// work until the day it rotated and then fail silently at 3am.
+/// well-known OpenID metadata endpoint (TeamsBot:OpenIdMetadataUrl), which the
+/// configuration manager below fetches and caches, refreshing on its own
+/// schedule. Pinning a key would work until the day it rotated and then fail
+/// silently at 3am.
+///
+/// Accepted issuers (TeamsBot:ValidTokenIssuers) and clock skew
+/// (TeamsBot:TokenClockSkewSeconds) are configuration too; the settings are
+/// validated at startup whenever Teams runs in Bot mode.
 /// </summary>
 public sealed class BotFrameworkTokenValidator
 {
-    private const string MetadataUrl =
-        "https://login.botframework.com/v1/.well-known/openidconfiguration";
+    private const string BearerPrefix = "Bearer ";
 
-    private const string ExpectedIssuer = "https://api.botframework.com";
-
-    private readonly IConfigurationManager<OpenIdConnectConfiguration> _configManager;
+    /// <summary>
+    /// Null when TeamsBot:OpenIdMetadataUrl is not configured - the bot is not
+    /// in use, and every call fails closed rather than throwing at construction.
+    /// </summary>
+    private readonly IConfigurationManager<OpenIdConnectConfiguration>? _configManager;
     private readonly TeamsBotOptions _options;
     private readonly ILogger<BotFrameworkTokenValidator> _logger;
     private readonly JwtSecurityTokenHandler _handler = new();
@@ -47,28 +53,32 @@ public sealed class BotFrameworkTokenValidator
         _options = options.Value;
         _logger = logger;
 
-        _configManager = new ConfigurationManager<OpenIdConnectConfiguration>(
-            MetadataUrl,
-            new OpenIdConnectConfigurationRetriever(),
-            new HttpDocumentRetriever { RequireHttps = true });
+        if (!string.IsNullOrWhiteSpace(_options.OpenIdMetadataUrl))
+        {
+            _configManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                _options.OpenIdMetadataUrl,
+                new OpenIdConnectConfigurationRetriever(),
+                new HttpDocumentRetriever { RequireHttps = true });
+        }
     }
 
     public async Task<bool> IsValidAsync(string? authorizationHeader, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.AppId))
+        if (string.IsNullOrWhiteSpace(_options.AppId) || _configManager is null)
         {
-            // Fail closed. A missing App ID must never mean "skip the check".
-            _logger.LogError("TeamsBot:AppId is not configured. Refusing all bot traffic.");
+            // Fail closed. Missing configuration must never mean "skip the check".
+            _logger.LogError(
+                "TeamsBot:AppId or TeamsBot:OpenIdMetadataUrl is not configured. Refusing all bot traffic.");
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(authorizationHeader) ||
-            !authorizationHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            !authorizationHeader.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        var token = authorizationHeader["Bearer ".Length..].Trim();
+        var token = authorizationHeader[BearerPrefix.Length..].Trim();
 
         try
         {
@@ -77,13 +87,10 @@ public sealed class BotFrameworkTokenValidator
             var parameters = new TokenValidationParameters
             {
                 ValidateIssuer = true,
-                ValidIssuers = new[]
-                {
-                    ExpectedIssuer,
-                    // Single-tenant bots see their own tenant as the issuer.
-                    $"https://login.microsoftonline.com/{_options.TenantId}/v2.0",
-                    $"https://sts.windows.net/{_options.TenantId}/"
-                },
+
+                // The Bot Framework issuer plus, for single-tenant bots, their
+                // own tenant's issuers - {tenantId} substituted from TenantId.
+                ValidIssuers = _options.ResolvedTokenIssuers,
 
                 // The check that actually matters: a valid token issued for a
                 // different bot must not be accepted here.
@@ -94,7 +101,7 @@ public sealed class BotFrameworkTokenValidator
                 IssuerSigningKeys = config.SigningKeys,
 
                 ValidateLifetime = true,
-                ClockSkew = TimeSpan.FromMinutes(5)
+                ClockSkew = TimeSpan.FromSeconds(_options.TokenClockSkewSeconds)
             };
 
             _handler.ValidateToken(token, parameters, out _);

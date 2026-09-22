@@ -256,9 +256,20 @@ public sealed class ChannelDispatcher
         CancellationToken cancellationToken)
     {
         // Business Central names the fallback too. Azure only supplies the
-        // transport for it.
-        if (!Enum.TryParse<ApprovalChannel>(payload.Approver.FallbackChannel, ignoreCase: true, out var fallback) ||
-            fallback == ApprovalChannel.None)
+        // transport for it - and, when the payload omits the field entirely,
+        // the configured Channels:FallbackChannel.
+        ApprovalChannel fallback;
+
+        if (payload.Approver.FallbackChannel is null)
+        {
+            fallback = _options.FallbackChannel;
+        }
+        else if (!Enum.TryParse<ApprovalChannel>(payload.Approver.FallbackChannel, ignoreCase: true, out fallback))
+        {
+            return null;
+        }
+
+        if (fallback == ApprovalChannel.None)
         {
             return null;
         }

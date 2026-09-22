@@ -35,9 +35,9 @@ namespace PulseNet.Approvals.Functions.Services;
 /// EXPIRY IS SHORT ON PURPOSE
 ///
 /// The approver has just tapped a button, so they are present and typing.
-/// Fifteen minutes is generous for that, and short enough that a forgotten tap
-/// does not leave a rejection armed for half an hour ready to consume an
-/// unrelated message.
+/// Channels:WhatsApp:RejectionReasonTimeoutMinutes should be generous for
+/// that, and short enough that a forgotten tap does not leave a rejection
+/// armed for long, ready to consume an unrelated message.
 /// </summary>
 public sealed class PendingRejectionStore
 {

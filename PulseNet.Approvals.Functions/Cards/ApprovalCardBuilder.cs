@@ -32,8 +32,6 @@ public sealed class ApprovalCardBuilder
 
     public ApprovalCardBuilder(IOptions<ChannelOptions> options) => _options = options.Value;
 
-    private const string AdaptiveCardSchema = "http://adaptivecards.io/schemas/adaptive-card.json";
-
     /// <summary>
     /// 1.5 unlocks Input.Text validation and the refresh block. Teams renders
     /// it and the Workflows webhook path renders it. Outlook actionable
@@ -48,12 +46,12 @@ public sealed class ApprovalCardBuilder
         string? approveUrl,
         string? rejectUrl)
     {
-        var vm = ApprovalCardViewModel.From(payload);
+        var vm = ApprovalCardViewModel.From(payload, _options.FallbackCurrencyCode, _options.MaxLinesOnCard);
 
         var card = new JsonObject
         {
             ["type"] = "AdaptiveCard",
-            ["$schema"] = AdaptiveCardSchema,
+            ["$schema"] = AdaptiveCardSchema.SchemaUri,
             ["version"] = AdaptiveCardVersion,
 
             // WHAT A CLIENT SHOWS WHEN IT CANNOT RENDER THE CARD.
@@ -79,8 +77,8 @@ public sealed class ApprovalCardBuilder
         };
 
         // Full-width is a desktop nicety and a known source of mobile
-        // rendering trouble. Off by default; turn it on only if the phones in
-        // use are known to handle it.
+        // rendering trouble. Channels:Teams:UseFullWidthCard - normally false;
+        // turn it on only if the phones in use are known to handle it.
         if (_options.Teams.UseFullWidthCard)
         {
             card["msteams"] = new JsonObject { ["width"] = "Full" };

@@ -40,6 +40,12 @@ namespace PulseNet.Approvals.Functions.Channels;
 /// </summary>
 public sealed class WhatsAppTemplateSender : IChannelSender
 {
+    /// <summary>Meta's cap on a quick-reply button payload. A Cloud API limit, not a setting.</summary>
+    private const int MaxQuickReplyPayloadLength = 256;
+
+    /// <summary>Meta's cap on a dynamic URL button suffix. A Cloud API limit, not a setting.</summary>
+    private const int MaxUrlButtonSuffixLength = 2000;
+
     private readonly WhatsAppClient _client;
     private readonly ActionTokenService _tokenService;
     private readonly ChannelOptions _options;
@@ -92,7 +98,7 @@ public sealed class WhatsAppTemplateSender : IChannelSender
             return ChannelSendResult.Fail(Channel, "no_whatsapp_consent");
         }
 
-        var vm = ApprovalCardViewModel.From(payload);
+        var vm = ApprovalCardViewModel.From(payload, _options.FallbackCurrencyCode, _options.MaxLinesOnCard);
 
         try
         {
@@ -135,15 +141,15 @@ public sealed class WhatsAppTemplateSender : IChannelSender
 
                 foreach (var p in quickReplyPayloads)
                 {
-                    if (p.Length > 256)
+                    if (p.Length > MaxQuickReplyPayloadLength)
                     {
                         // Should not happen - the token is about ninety
                         // characters - but a silent truncation by Meta would
                         // produce a token that fails validation with no clue
                         // why.
                         _logger.LogError(
-                            "Action token is {Length} characters, over the 256 limit. Refusing to send.",
-                            p.Length);
+                            "Action token is {Length} characters, over the {Limit} limit. Refusing to send.",
+                            p.Length, MaxQuickReplyPayloadLength);
 
                         return ChannelSendResult.Fail(Channel, "token_too_long");
                     }
@@ -208,6 +214,6 @@ public sealed class WhatsAppTemplateSender : IChannelSender
         // Meta caps the suffix. Truncating a URL would produce a link that
         // opens the wrong record, so send nothing rather than something wrong -
         // the message body still names the document.
-        return suffix.Length > 2000 ? null : suffix;
+        return suffix.Length > MaxUrlButtonSuffixLength ? null : suffix;
     }
 }

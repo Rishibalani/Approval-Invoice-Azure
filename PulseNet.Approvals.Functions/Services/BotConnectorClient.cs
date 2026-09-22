@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PulseNet.Approvals.Functions.Cards;
 using PulseNet.Approvals.Functions.Models;
 using PulseNet.Approvals.Functions.Options;
 
@@ -39,8 +40,15 @@ namespace PulseNet.Approvals.Functions.Services;
 /// </summary>
 public sealed class BotConnectorClient
 {
+    /// <summary>Bot Connector REST API v3 conversations resource.</summary>
+    private const string ConversationsPath = "v3/conversations";
+
+    /// <summary>Teams channel account prefix for a bot's own id.</summary>
+    private const string BotAccountIdPrefix = "28:";
+
     private readonly HttpClient _http;
     private readonly TeamsBotOptions _options;
+    private readonly EntraOptions _entra;
     private readonly ILogger<BotConnectorClient> _logger;
 
     private string? _cachedToken;
@@ -50,10 +58,12 @@ public sealed class BotConnectorClient
     public BotConnectorClient(
         HttpClient http,
         IOptions<TeamsBotOptions> options,
+        IOptions<EntraOptions> entra,
         ILogger<BotConnectorClient> logger)
     {
         _http = http;
         _options = options.Value;
+        _entra = entra.Value;
         _logger = logger;
     }
 
@@ -76,7 +86,7 @@ public sealed class BotConnectorClient
             ["isGroup"] = false,
             ["bot"] = new JsonObject
             {
-                ["id"] = $"28:{_options.AppId}"
+                ["id"] = $"{BotAccountIdPrefix}{_options.AppId}"
             },
             ["members"] = new JsonArray
             {
@@ -89,7 +99,7 @@ public sealed class BotConnectorClient
             ["tenantId"] = _options.TenantId
         };
 
-        var url = $"{serviceUrl.TrimEnd('/')}/v3/conversations";
+        var url = $"{serviceUrl.TrimEnd('/')}/{ConversationsPath}";
 
         try
         {
@@ -99,7 +109,7 @@ public sealed class BotConnectorClient
             };
 
             request.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer", await GetTokenAsync(TeamsBotOptions.BotFrameworkScope, cancellationToken));
+                "Bearer", await GetTokenAsync(_options.BotFrameworkScope, cancellationToken));
 
             using var response = await _http.SendAsync(request, cancellationToken);
             var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -151,7 +161,7 @@ public sealed class BotConnectorClient
         CancellationToken cancellationToken)
     {
         var activity = BuildCardActivity(card, summary);
-        var url = $"{serviceUrl.TrimEnd('/')}/v3/conversations/{conversationId}/activities";
+        var url = $"{serviceUrl.TrimEnd('/')}/{ConversationsPath}/{conversationId}/activities";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
@@ -159,7 +169,7 @@ public sealed class BotConnectorClient
         };
 
         request.Headers.Authorization = new AuthenticationHeaderValue(
-            "Bearer", await GetTokenAsync(TeamsBotOptions.BotFrameworkScope, cancellationToken));
+            "Bearer", await GetTokenAsync(_options.BotFrameworkScope, cancellationToken));
 
         using var response = await _http.SendAsync(request, cancellationToken);
         var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -194,7 +204,7 @@ public sealed class BotConnectorClient
         CancellationToken cancellationToken)
     {
         var activity = BuildCardActivity(card, summary);
-        var url = $"{serviceUrl.TrimEnd('/')}/v3/conversations/{conversationId}/activities/{activityId}";
+        var url = $"{serviceUrl.TrimEnd('/')}/{ConversationsPath}/{conversationId}/activities/{activityId}";
 
         using var request = new HttpRequestMessage(HttpMethod.Put, url)
         {
@@ -202,7 +212,7 @@ public sealed class BotConnectorClient
         };
 
         request.Headers.Authorization = new AuthenticationHeaderValue(
-            "Bearer", await GetTokenAsync(TeamsBotOptions.BotFrameworkScope, cancellationToken));
+            "Bearer", await GetTokenAsync(_options.BotFrameworkScope, cancellationToken));
 
         using var response = await _http.SendAsync(request, cancellationToken);
 
@@ -231,7 +241,7 @@ public sealed class BotConnectorClient
             {
                 new JsonObject
                 {
-                    ["contentType"] = "application/vnd.microsoft.card.adaptive",
+                    ["contentType"] = AdaptiveCardSchema.ContentType,
                     ["content"] = card.DeepClone()
                 }
             }
@@ -260,11 +270,11 @@ public sealed class BotConnectorClient
 
         try
         {
-            var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(upn)}?$select=id";
+            var url = $"{_options.GraphBaseUrl.TrimEnd('/')}/users/{Uri.EscapeDataString(upn)}?$select=id";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer", await GetTokenAsync(TeamsBotOptions.GraphScope, cancellationToken));
+                "Bearer", await GetTokenAsync(_options.GraphScope, cancellationToken));
 
             using var response = await _http.SendAsync(request, cancellationToken);
 
@@ -303,11 +313,11 @@ public sealed class BotConnectorClient
 
         try
         {
-            var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(aadObjectId)}?$select=userPrincipalName,mail";
+            var url = $"{_options.GraphBaseUrl.TrimEnd('/')}/users/{Uri.EscapeDataString(aadObjectId)}?$select=userPrincipalName,mail";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer", await GetTokenAsync(TeamsBotOptions.GraphScope, cancellationToken));
+                "Bearer", await GetTokenAsync(_options.GraphScope, cancellationToken));
 
             using var response = await _http.SendAsync(request, cancellationToken);
 
@@ -342,8 +352,8 @@ public sealed class BotConnectorClient
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Client credentials against Entra, cached per scope and renewed five
-    /// minutes early.
+    /// Client credentials against Entra, cached per scope and renewed
+    /// Entra:TokenRefreshSkewSeconds early.
     ///
     /// SingleTenant bots authenticate against their own tenant's endpoint.
     /// MultiTenant bots used login.microsoftonline.com/botframework.com, which
@@ -352,13 +362,13 @@ public sealed class BotConnectorClient
     /// </summary>
     private async Task<string> GetTokenAsync(string scope, CancellationToken cancellationToken)
     {
-        var isGraph = scope == TeamsBotOptions.GraphScope;
+        var isGraph = scope == _options.GraphScope;
 
         // Only the Bot Framework token is cached on the instance. Graph calls
         // are rare - one per approver, then the object ID is cached in Business
         // Central - so a per-call token is not worth the extra state.
         if (!isGraph && _cachedToken is not null &&
-            DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+            DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
         {
             return _cachedToken;
         }
@@ -367,7 +377,7 @@ public sealed class BotConnectorClient
         try
         {
             if (!isGraph && _cachedToken is not null &&
-                DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+                DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
             {
                 return _cachedToken;
             }
@@ -388,7 +398,7 @@ public sealed class BotConnectorClient
                 ["scope"] = scope
             });
 
-            var tokenUrl = $"https://login.microsoftonline.com/{_options.TenantId}/oauth2/v2.0/token";
+            var tokenUrl = _entra.TokenEndpoint(_options.TenantId);
 
             using var response = await _http.PostAsync(tokenUrl, form, cancellationToken);
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -413,7 +423,7 @@ public sealed class BotConnectorClient
             {
                 var expiresIn = doc.RootElement.TryGetProperty("expires_in", out var exp)
                     ? exp.GetInt32()
-                    : 3000;
+                    : throw new InvalidOperationException("Entra returned no expires_in.");
 
                 _cachedToken = token;
                 _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn);

@@ -11,6 +11,14 @@ using PulseNet.Approvals.Functions.Models;
 /// channel at all). This class is authoritative for TRANSPORT (how do we
 /// physically reach the channel). Keeping that line clean is what stops
 /// financial rules leaking out of the system of record.
+///
+/// VALIDATION
+///
+/// Nothing here has a code-level default. DataAnnotations do not recurse into
+/// the nested channel classes, so every rule - including the conditional ones
+/// (WhatsApp settings only when WhatsApp is enabled, the webhook URL only in
+/// WorkflowWebhook mode, and so on) - lives in
+/// Options/Validation/ChannelOptionsValidator and runs at startup.
 /// </summary>
 public sealed class ChannelOptions
 {
@@ -21,22 +29,46 @@ public sealed class ChannelOptions
     public WhatsAppChannelOptions WhatsApp { get; set; } = new();
 
     /// <summary>
-    /// Base URL of the action endpoint that Link-mode buttons point at, e.g.
+    /// FULL URL of the action endpoint that Link-mode buttons point at,
+    /// including the route, e.g.
     /// https://pulsenet-approvals.azurewebsites.net/api/approvals/act
+    ///
+    /// Used verbatim - only the ?t= token parameter is appended - so it must
+    /// match the ApprovalAct function's route. Required when any enabled
+    /// channel uses Link action mode.
     /// </summary>
     public string ActionEndpointBaseUrl { get; set; } = string.Empty;
 
     /// <summary>
-    /// Channel tried when every enabled channel fails. Outlook by default:
-    /// every approver has a mailbox, which is not true of a Teams app install.
+    /// Channel tried when every enabled channel fails and Business Central's
+    /// payload does not name a fallback of its own. Outlook is the usual
+    /// choice: every approver has a mailbox, which is not true of a Teams app
+    /// install. Must be present in configuration.
     /// </summary>
-    public ApprovalChannel FallbackChannel { get; set; } = ApprovalChannel.Outlook;
+    public ApprovalChannel FallbackChannel { get; set; }
+
+    /// <summary>
+    /// Currency code shown when Business Central sends neither a document
+    /// Currency Code nor an LCY code - normally the company's home currency.
+    /// A bare "10.00" tells the approver nothing.
+    /// </summary>
+    public string FallbackCurrencyCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Document lines rendered on a card before "+N more line(s)". Teams
+    /// rejects cards over 28 KB, so keep this modest (10 was the old constant).
+    /// Business Central's "Email Max Lines" should normally match it.
+    /// </summary>
+    public int MaxLinesOnCard { get; set; }
 }
 
 public sealed class TeamsChannelOptions
 {
-    public ChannelDeliveryMode DeliveryMode { get; set; } = ChannelDeliveryMode.Disabled;
-    public ChannelActionMode ActionMode { get; set; } = ChannelActionMode.Link;
+    /// <summary>Must be present in configuration. Disabled switches Teams off.</summary>
+    public ChannelDeliveryMode DeliveryMode { get; set; }
+
+    /// <summary>Must be present in configuration.</summary>
+    public ChannelActionMode ActionMode { get; set; }
 
     /// <summary>
     /// Workflows incoming webhook URL. Posts to a channel or a chat depending
@@ -53,18 +85,23 @@ public sealed class TeamsChannelOptions
     ///
     /// FlowRouted - a Power Automate flow that takes the recipient as a
     ///   parameter and posts a 1:1 chat via Flow bot. Per-approver delivery,
-    ///   no bot registration. This is the default.
+    ///   no bot registration. The usual choice.
     ///
     /// TeamsMessage - the raw Teams message envelope, posted straight into a
     ///   fixed channel. One destination for everyone, so it cannot address an
     ///   individual approver. Useful for a shared ops channel or a quick test.
+    ///
+    /// Must be present in configuration when DeliveryMode is WorkflowWebhook.
     /// </summary>
-    public WebhookPayloadMode PayloadMode { get; set; } = WebhookPayloadMode.FlowRouted;
+    public WebhookPayloadMode PayloadMode { get; set; }
+
+    /// <summary>HttpClient timeout for posts to the Workflows webhook. Always required.</summary>
+    public int WebhookHttpTimeoutSeconds { get; set; }
 
     /// <summary>
     /// Full-width cards. A desktop nicety and a known source of mobile
-    /// rendering trouble, so off by default. Turn on only if the phones in use
-    /// are known to handle it.
+    /// rendering trouble, so normally false. Turn on only if the phones in use
+    /// are known to handle it. Must be present when Teams is enabled.
     /// </summary>
     public bool UseFullWidthCard { get; set; }
 
@@ -72,10 +109,10 @@ public sealed class TeamsChannelOptions
     /// The Adaptive Card `refresh` block, which lets a card re-fetch itself
     /// when reopened.
     ///
-    /// Off by default. It is Adaptive Card 1.4, and a mobile client that
+    /// Normally false. It is Adaptive Card 1.4, and a mobile client that
     /// cannot parse it may drop the WHOLE CARD rather than just the refresh -
     /// which renders as an empty message with a timestamp and no error
-    /// anywhere.
+    /// anywhere. Must be present when Teams is enabled.
     ///
     /// Cards now update themselves through CardRefreshService when a decision
     /// lands, so this is a secondary path rather than the only one.
@@ -97,20 +134,29 @@ public enum WebhookPayloadMode
     TeamsMessage = 1
 }
 
+/// <summary>
+/// Outlook transport settings. The Outlook senders are preserved but not
+/// registered; the settings below are required only when DeliveryMode is not
+/// Disabled. RequireRejectionReason is the exception - it is read by the Teams
+/// bot path too, so it is always required.
+/// </summary>
 public sealed class OutlookChannelOptions
 {
-    public ChannelDeliveryMode DeliveryMode { get; set; } = ChannelDeliveryMode.Disabled;
-    public ChannelActionMode ActionMode { get; set; } = ChannelActionMode.Link;
+    /// <summary>Must be present in configuration. Disabled switches Outlook off.</summary>
+    public ChannelDeliveryMode DeliveryMode { get; set; }
+
+    /// <summary>Must be present in configuration.</summary>
+    public ChannelActionMode ActionMode { get; set; }
 
     public string FromAddress { get; set; } = string.Empty;
-    public string FromDisplayName { get; set; } = "Business Central Approvals";
+    public string FromDisplayName { get; set; } = string.Empty;
 
     /// <summary>
-    /// Which transport actually puts the mail on the wire. Left as None in the
-    /// skeleton because it is a real decision with cost and permission
-    /// consequences - see PlainEmailSender for the three options.
+    /// Which transport actually puts the mail on the wire (None, Graph, Acs).
+    /// A real decision with cost and permission consequences - see
+    /// PlainEmailSender for the three options.
     /// </summary>
-    public string Transport { get; set; } = "None";
+    public string Transport { get; set; } = string.Empty;
 
     /// <summary>Azure Communication Services connection string, when Transport is Acs.</summary>
     public string AcsConnectionString { get; set; } = string.Empty;
@@ -148,16 +194,22 @@ public sealed class OutlookChannelOptions
     /// <summary>
     /// False only for local development, where no real Outlook token exists.
     /// Fails the build of a production deployment if left false - assert it in
-    /// Program.cs rather than trusting configuration review.
+    /// Program.cs rather than trusting configuration review. Must be present
+    /// when Outlook is enabled.
     /// </summary>
-    public bool ValidateInboundToken { get; set; } = true;
+    public bool ValidateInboundToken { get; set; }
 
-    /// <summary>OpenID metadata document for the Actionable Messages signing keys.</summary>
-    public string TokenMetadataUrl { get; set; } =
-        "https://substrate.office.com/sts/common/.well-known/openid-configuration";
+    /// <summary>
+    /// OpenID metadata document for the Actionable Messages signing keys, e.g.
+    /// https://substrate.office.com/sts/common/.well-known/openid-configuration
+    /// </summary>
+    public string TokenMetadataUrl { get; set; } = string.Empty;
 
-    /// <summary>Comma-separated accepted iss claims. Split at the point of use.</summary>
-    public string ValidTokenIssuers { get; set; } = "https://substrate.office.com/sts/";
+    /// <summary>
+    /// Comma-separated accepted iss claims, e.g. https://substrate.office.com/sts/
+    /// Split at the point of use.
+    /// </summary>
+    public string ValidTokenIssuers { get; set; } = string.Empty;
 
     /// <summary>
     /// The aud claim, which Microsoft sets to the ORIGIN of your action
@@ -171,7 +223,8 @@ public sealed class OutlookChannelOptions
     /// Require the token's sub claim to equal the approver the card was sent
     /// to. Stops a forwarded email being actioned by the recipient: the mail
     /// forwards, the token does not re-mint for the new reader, but a shared
-    /// mailbox can still produce a surprise. Leave true.
+    /// mailbox can still produce a surprise. Leave true. Must be present when
+    /// Outlook is enabled.
     /// </summary>
     public bool RequireMailboxMatch { get; set; }
 
@@ -185,20 +238,31 @@ public sealed class OutlookChannelOptions
     ///
     /// Read by the Teams bot path as well as Outlook. The rule is one policy,
     /// not one per channel, so a single switch beats several that can disagree
-    /// about whether a reason is needed.
+    /// about whether a reason is needed. Always required, whatever Outlook's
+    /// delivery mode - a missing key must never silently mean "no reason".
     /// </summary>
-    public bool RequireRejectionReason { get; set; } = true;
+    public bool RequireRejectionReason { get; set; }
 }
 
+/// <summary>
+/// WhatsApp Cloud API settings. Everything except DeliveryMode and the
+/// HttpClient timeout is required only when DeliveryMode is not Disabled.
+/// </summary>
 public sealed class WhatsAppChannelOptions
 {
-    public ChannelDeliveryMode DeliveryMode { get; set; } = ChannelDeliveryMode.Disabled;
-    public ChannelActionMode ActionMode { get; set; } = ChannelActionMode.NotifyOnly;
+    /// <summary>Must be present in configuration. Disabled switches WhatsApp off.</summary>
+    public ChannelDeliveryMode DeliveryMode { get; set; }
+
+    public ChannelActionMode ActionMode { get; set; }
 
     public string PhoneNumberId { get; set; } = string.Empty;
     public string AccessToken { get; set; } = string.Empty;
-    public string TemplateName { get; set; } = "invoice_approval_request";
-    public string TemplateLanguage { get; set; } = "en";
+
+    /// <summary>Must match the template exactly as approved by Meta.</summary>
+    public string TemplateName { get; set; } = string.Empty;
+
+    /// <summary>Language code the template was approved under, e.g. en.</summary>
+    public string TemplateLanguage { get; set; } = string.Empty;
     /// <summary>
     /// The Meta app secret. Used to verify X-Hub-Signature-256 on every
     /// inbound webhook, which is the only thing standing between a public URL
@@ -213,32 +277,40 @@ public sealed class WhatsAppChannelOptions
     public string WebhookVerifyToken { get; set; } = string.Empty;
 
     /// <summary>
-    /// Graph API version in the send URL. Pinned rather than floating - Meta
-    /// deprecates versions on a schedule and a silent bump is not something to
-    /// discover from a production failure.
+    /// Meta Graph API root, without the version, e.g. https://graph.facebook.com
     /// </summary>
-    public string ApiVersion { get; set; } = "v21.0";
+    public string GraphApiBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Graph API version in the send URL, e.g. v21.0. Pinned rather than
+    /// floating - Meta deprecates versions on a schedule and a silent bump is
+    /// not something to discover from a production failure.
+    /// </summary>
+    public string ApiVersion { get; set; } = string.Empty;
+
+    /// <summary>HttpClient timeout for Cloud API calls. Always required.</summary>
+    public int HttpTimeoutSeconds { get; set; }
 
     /// <summary>
     /// Table holding rejections waiting for their reason. See
     /// PendingRejectionStore for why WhatsApp needs this and the others do not.
     /// </summary>
-    public string PendingRejectionTable { get; set; } = "whatsapppendingrejections";
+    public string PendingRejectionTable { get; set; } = string.Empty;
 
     /// <summary>
     /// How long to wait for a rejection reason before giving up.
     ///
     /// Shorter than the action token TTL on purpose: the approver has already
-    /// tapped Reject, so they are present and typing. Fifteen minutes is
-    /// generous for someone mid-conversation and short enough that a forgotten
-    /// tap does not leave a rejection armed for half an hour.
+    /// tapped Reject, so they are present and typing. It should be generous for
+    /// someone mid-conversation and short enough that a forgotten tap does not
+    /// leave a rejection armed for long.
     /// </summary>
-    public int RejectionReasonTimeoutMinutes { get; set; } = 15;
+    public int RejectionReasonTimeoutMinutes { get; set; }
 
     /// <summary>
     /// Inbound message IDs, for deduplication. Meta retries a webhook for up
     /// to 24 hours if it does not get a 200, so without this a slow response
     /// can approve the same invoice twice.
     /// </summary>
-    public string InboundDedupeTable { get; set; } = "whatsappinbound";
+    public string InboundDedupeTable { get; set; } = string.Empty;
 }

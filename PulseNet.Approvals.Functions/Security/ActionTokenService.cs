@@ -27,7 +27,7 @@ namespace PulseNet.Approvals.Functions.Security;
 /// format is positional and terse, and the signature is truncated to 16 bytes.
 ///
 /// Truncating an HMAC to 128 bits is fine here: forging one requires 2^128
-/// work, and the token expires in thirty minutes regardless. The nonce store
+/// work, and the token expires after ActionToken:TtlMinutes regardless. The nonce store
 /// means even a valid token only works once.
 ///
 /// FORMAT
@@ -48,6 +48,12 @@ namespace PulseNet.Approvals.Functions.Security;
 /// </summary>
 public sealed class ActionTokenService
 {
+    /// <summary>
+    /// Query-string parameter carrying the token on a Link-mode URL. A contract
+    /// between BuildActionUrl and ApprovalActionFunction, not a setting.
+    /// </summary>
+    public const string TokenQueryParameter = "t";
+
     private const string TokenVersion = "1";
     private const int SignatureBytes = 16;
 
@@ -98,11 +104,15 @@ public sealed class ActionTokenService
              + Base64UrlEncode(ComputeSignature(payload));
     }
 
-    /// <summary>Full URL a Link-mode button points at.</summary>
+    /// <summary>
+    /// Full URL a Link-mode button points at: the configured
+    /// Channels:ActionEndpointBaseUrl (the complete endpoint URL) plus the
+    /// token parameter.
+    /// </summary>
     public string BuildActionUrl(string actionEndpointBaseUrl, string token)
     {
         var separator = actionEndpointBaseUrl.Contains('?') ? "&" : "?";
-        return $"{actionEndpointBaseUrl}{separator}t={Uri.EscapeDataString(token)}";
+        return $"{actionEndpointBaseUrl}{separator}{TokenQueryParameter}={Uri.EscapeDataString(token)}";
     }
 
     // ------------------------------------------------------------------
@@ -238,8 +248,9 @@ public sealed class ActionTokenService
         var table = _tableService.GetTableClient(_options.NonceTable);
         await table.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
-        // A token lives 30 minutes, so it can only ever appear in today's or
-        // yesterday's partition. Checking two partitions beats a table scan.
+        // A token lives ActionToken:TtlMinutes, validated at startup to be at
+        // most one day, so it can only ever appear in today's or yesterday's
+        // partition. Checking two partitions beats a table scan.
         foreach (var partition in new[]
                  {
                      DateTime.UtcNow.ToString("yyyyMMdd"),

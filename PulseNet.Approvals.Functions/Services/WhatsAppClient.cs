@@ -48,8 +48,12 @@ public sealed class WhatsAppClient
         _logger = logger;
     }
 
+    /// <summary>
+    /// {GraphApiBaseUrl}/{ApiVersion}/{PhoneNumberId}/messages - all three from
+    /// Channels:WhatsApp configuration.
+    /// </summary>
     private string SendUrl =>
-        $"https://graph.facebook.com/{_options.ApiVersion}/{_options.PhoneNumberId}/messages";
+        $"{_options.GraphApiBaseUrl.TrimEnd('/')}/{_options.ApiVersion}/{_options.PhoneNumberId}/messages";
 
     // ------------------------------------------------------------------
     //  Template send - the approval request

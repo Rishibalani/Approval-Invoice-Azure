@@ -21,9 +21,10 @@ namespace PulseNet.Approvals.Functions.Functions;
 ///
 /// POISON HANDLING IS FREE
 ///
-/// After maxDequeueCount attempts (5, in host.json) the message lands on
-/// approval-dispatch-poison. Put an alert on that queue's length - it is the
-/// level 4 escalation from the plan.
+/// After maxDequeueCount attempts (the host default of 5, overridable under
+/// extensions.queues in host.json) the message lands on the queue named
+/// {Dispatch:QueueName}-poison. Put an alert on that queue's length - it is
+/// the level 4 escalation from the plan.
 /// </summary>
 public sealed class ApprovalDispatchWorker
 {

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using PulseNet.Approvals.Functions.Cards;
 using PulseNet.Approvals.Functions.Models;
 
 namespace PulseNet.Approvals.Functions.Services;
@@ -137,8 +138,8 @@ public sealed class CardRefreshService
         new()
         {
             ["type"] = "AdaptiveCard",
-            ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
-            ["version"] = "1.4",
+            ["$schema"] = AdaptiveCardSchema.SchemaUri,
+            ["version"] = AdaptiveCardSchema.Version14,
             ["body"] = new JsonArray
             {
                 new JsonObject

@@ -195,7 +195,9 @@ public sealed class ProvisionApproversFunction
                     report.Throttled.Add(approver.Upn);
                     // Graph is pushing back. Pausing beats hammering it and
                     // having the rest of the run fail too.
-                    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(_teamsOptions.ProvisioningThrottleDelaySeconds),
+                        cancellationToken);
                     break;
                 default:
                     report.InstallFailed.Add(approver.Upn);

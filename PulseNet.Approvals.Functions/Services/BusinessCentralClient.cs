@@ -26,6 +26,7 @@ public sealed class BusinessCentralClient
 {
     private readonly HttpClient _http;
     private readonly BusinessCentralOptions _options;
+    private readonly EntraOptions _entra;
     private readonly ILogger<BusinessCentralClient> _logger;
 
     // Token cache. Static-per-instance because the client is registered as a
@@ -43,10 +44,12 @@ public sealed class BusinessCentralClient
     public BusinessCentralClient(
         HttpClient http,
         IOptions<BusinessCentralOptions> options,
+        IOptions<EntraOptions> entra,
         ILogger<BusinessCentralClient> logger)
     {
         _http = http;
         _options = options.Value;
+        _entra = entra.Value;
         _logger = logger;
     }
 
@@ -460,14 +463,15 @@ public sealed class BusinessCentralClient
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Client credentials against Entra, cached and renewed five minutes early.
-    /// Same reasoning as the AL side: a token expiring between our check and
-    /// Business Central's validation produces a 401 indistinguishable from a
-    /// misconfiguration, and the skew makes that race impossible.
+    /// Client credentials against Entra, cached and renewed
+    /// Entra:TokenRefreshSkewSeconds early. Same reasoning as the AL side: a
+    /// token expiring between our check and Business Central's validation
+    /// produces a 401 indistinguishable from a misconfiguration, and the skew
+    /// makes that race impossible.
     /// </summary>
     private async Task<string> GetTokenAsync(CancellationToken cancellationToken)
     {
-        if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+        if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
         {
             return _cachedToken;
         }
@@ -476,7 +480,7 @@ public sealed class BusinessCentralClient
         try
         {
             // Re-check: another thread may have refreshed while we waited.
-            if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+            if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
             {
                 return _cachedToken;
             }
@@ -486,10 +490,10 @@ public sealed class BusinessCentralClient
                 ["grant_type"] = "client_credentials",
                 ["client_id"] = _options.ClientId,
                 ["client_secret"] = _options.ClientSecret,
-                ["scope"] = BusinessCentralOptions.Scope
+                ["scope"] = _options.Scope
             });
 
-            var tokenUrl = $"https://login.microsoftonline.com/{_options.TenantId}/oauth2/v2.0/token";
+            var tokenUrl = _entra.TokenEndpoint(_options.TenantId);
 
             using var response = await _http.PostAsync(tokenUrl, form, cancellationToken);
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -510,9 +514,11 @@ public sealed class BusinessCentralClient
             var token = doc.RootElement.GetProperty("access_token").GetString()
                         ?? throw new InvalidOperationException("Entra returned no access_token.");
 
+            // No guessed lifetime: a token of unknown lifetime cannot be cached
+            // safely, and Entra always sends expires_in on a v2.0 response.
             var expiresIn = doc.RootElement.TryGetProperty("expires_in", out var exp)
                 ? exp.GetInt32()
-                : 3000;
+                : throw new InvalidOperationException("Entra returned no expires_in.");
 
             _cachedToken = token;
             _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn);

@@ -41,12 +41,18 @@ public sealed record ApprovalCardViewModel
     public sealed record CardFact(string Title, string Value);
     public sealed record CardLine(string Description, string Quantity, string Amount);
 
-    /// <summary>Teams rejects cards over 28 KB. Ten lines keeps a wide margin.</summary>
-    private const int MaxLinesOnCard = 10;
-
     private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
 
-    public static ApprovalCardViewModel From(ApprovalDispatchPayload p)
+    /// <param name="p">The dispatch payload.</param>
+    /// <param name="fallbackCurrencyCode">
+    /// Channels:FallbackCurrencyCode - used only when Business Central sends
+    /// neither a document Currency Code nor an LCY code.
+    /// </param>
+    /// <param name="maxLinesOnCard">
+    /// Channels:MaxLinesOnCard - document lines rendered before "+N more".
+    /// Teams rejects cards over 28 KB, so keep this modest.
+    /// </param>
+    public static ApprovalCardViewModel From(ApprovalDispatchPayload p, string fallbackCurrencyCode, int maxLinesOnCard)
     {
         var doc = p.Document;
         var appr = p.Approval;
@@ -62,7 +68,7 @@ public sealed record ApprovalCardViewModel
         var inclTax = doc.HasTaxBreakdown ? doc.AmountInclTax : doc.Amount;
         var exclTax = doc.HasTaxBreakdown ? doc.AmountExclTax : doc.Amount;
 
-        var shownLineCount = Math.Min(doc.Lines?.Count ?? 0, MaxLinesOnCard);
+        var shownLineCount = Math.Min(doc.Lines?.Count ?? 0, maxLinesOnCard);
         var trueLineCount = doc.TotalLineCount > 0 ? doc.TotalLineCount : doc.Lines?.Count ?? 0;
 
         return new ApprovalCardViewModel
@@ -72,7 +78,7 @@ public sealed record ApprovalCardViewModel
                           ?? (doc.Direction == "Payable" ? "Purchase invoice approval" : "Sales invoice approval"),
             DocumentNo = doc.DocumentNo,
             PartyName = Trim(doc.CounterpartyName) ?? Trim(doc.CounterpartyNo) ?? "Unknown party",
-            HeadlineAmount = Money(inclTax, currency),
+            HeadlineAmount = Money(inclTax, currency, fallbackCurrencyCode),
 
             CreatedLine = BuildCreatedLine(doc),
             DelegatedFromName = Trim(appr.DelegatedFromName),
@@ -82,8 +88,8 @@ public sealed record ApprovalCardViewModel
                 : null,
             SubstituteName = Trim(p.Approver.SubstituteName),
 
-            Facts = BuildFacts(p, currency, exclTax, inclTax),
-            Lines = BuildLines(doc),
+            Facts = BuildFacts(p, currency, exclTax, inclTax, fallbackCurrencyCode),
+            Lines = BuildLines(doc, maxLinesOnCard),
             HiddenLineCount = Math.Max(0, trueLineCount - shownLineCount)
         };
     }
@@ -91,7 +97,7 @@ public sealed record ApprovalCardViewModel
     // ------------------------------------------------------------------
 
     private static IReadOnlyList<CardFact> BuildFacts(
-        ApprovalDispatchPayload p, string? currency, decimal exclTax, decimal inclTax)
+        ApprovalDispatchPayload p, string? currency, decimal exclTax, decimal inclTax, string fallbackCurrencyCode)
     {
         var doc = p.Document;
         var facts = new List<CardFact>();
@@ -113,15 +119,15 @@ public sealed record ApprovalCardViewModel
 
         if (doc.HasTaxBreakdown && exclTax != inclTax)
         {
-            Add("Amount excl. tax", Money(exclTax, currency));
-            if (doc.TaxAmount > 0) Add("Tax", Money(doc.TaxAmount, currency));
-            Add("Amount incl. tax", Money(inclTax, currency));
+            Add("Amount excl. tax", Money(exclTax, currency, fallbackCurrencyCode));
+            if (doc.TaxAmount > 0) Add("Tax", Money(doc.TaxAmount, currency, fallbackCurrencyCode));
+            Add("Amount incl. tax", Money(inclTax, currency, fallbackCurrencyCode));
         }
 
         // Local value is only interesting on a foreign-currency document.
         if (!string.IsNullOrWhiteSpace(doc.CurrencyCode) && doc.Amount != doc.AmountLcy)
         {
-            Add("Local value", Money(doc.AmountLcy, p.Source.LocalCurrencyCode));
+            Add("Local value", Money(doc.AmountLcy, p.Source.LocalCurrencyCode, fallbackCurrencyCode));
         }
 
         Add("Document date", Date(doc.DocumentDate));
@@ -148,12 +154,12 @@ public sealed record ApprovalCardViewModel
         return facts;
     }
 
-    private static IReadOnlyList<CardLine> BuildLines(DocumentInfo doc)
+    private static IReadOnlyList<CardLine> BuildLines(DocumentInfo doc, int maxLinesOnCard)
     {
         if (doc.Lines is null || doc.Lines.Count == 0) return [];
 
         return doc.Lines
-            .Take(MaxLinesOnCard)
+            .Take(maxLinesOnCard)
             .Select(l => new CardLine(
                 Description: string.IsNullOrWhiteSpace(l.Description) ? "(no description)" : l.Description,
                 Quantity: string.IsNullOrWhiteSpace(l.UnitOfMeasure)
@@ -215,14 +221,6 @@ public sealed record ApprovalCardViewModel
     private static string? Trim(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     /// <summary>
-    /// Last-resort currency when Business Central sends neither a document
-    /// Currency Code nor an LCY code. Wrong is better than absent here: a bare
-    /// "10.00" tells the approver nothing, and this is the company's home
-    /// currency in every realistic case.
-    /// </summary>
-    private const string FallbackCurrencyCode = "CAD";
-
-    /// <summary>
     /// Symbols for the currencies actually in use. Deliberately not a
     /// CultureInfo lookup — culture maps country to currency, which breaks the
     /// moment one company transacts in two currencies.
@@ -238,9 +236,16 @@ public sealed record ApprovalCardViewModel
         ["JPY"] = "¥"
     };
 
-    private static string Money(decimal amount, string? currencyCode)
+    /// <summary>
+    /// fallbackCurrencyCode (Channels:FallbackCurrencyCode) is the last resort
+    /// when Business Central sends neither a document Currency Code nor an LCY
+    /// code. Wrong is better than absent here: a bare "10.00" tells the
+    /// approver nothing, and the configured value is the company's home
+    /// currency in every realistic case.
+    /// </summary>
+    private static string Money(decimal amount, string? currencyCode, string fallbackCurrencyCode)
     {
-        var code = string.IsNullOrWhiteSpace(currencyCode) ? FallbackCurrencyCode : currencyCode.Trim();
+        var code = string.IsNullOrWhiteSpace(currencyCode) ? fallbackCurrencyCode.Trim() : currencyCode.Trim();
         var n = amount.ToString("N2", Ci);
 
         // Symbol AND code. "$10.00" is ambiguous across CAD, USD and AUD, and on

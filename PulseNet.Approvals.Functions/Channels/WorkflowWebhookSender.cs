@@ -14,7 +14,7 @@ namespace PulseNet.Approvals.Functions.Channels;
 ///
 /// TWO PAYLOAD SHAPES, ONE SENDER
 ///
-/// FlowRouted (the default) posts { recipientUpn, summary, cardJson } to a
+/// FlowRouted (the usual choice) posts { recipientUpn, summary, cardJson } to a
 /// flow that reads the recipient and sends a 1:1 chat via Flow bot. That gives
 /// per-approver delivery with no bot registration, no manifest and no Teams
 /// admin involvement - the approver simply gets a direct message.
@@ -177,8 +177,8 @@ public sealed class WorkflowWebhookSender : IChannelSender
         var card = new JsonObject
         {
             ["type"] = "AdaptiveCard",
-            ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
-            ["version"] = "1.4",
+            ["$schema"] = AdaptiveCardSchema.SchemaUri,
+            ["version"] = AdaptiveCardSchema.Version14,
             ["body"] = new JsonArray
             {
                 new JsonObject
@@ -272,7 +272,7 @@ public sealed class WorkflowWebhookSender : IChannelSender
             {
                 new JsonObject
                 {
-                    ["contentType"] = "application/vnd.microsoft.card.adaptive",
+                    ["contentType"] = AdaptiveCardSchema.ContentType,
                     ["contentUrl"] = null,
                     ["content"] = card.DeepClone()
                 }

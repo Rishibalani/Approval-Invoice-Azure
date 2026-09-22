@@ -43,6 +43,15 @@ namespace PulseNet.Approvals.Functions.Functions;
 /// </summary>
 public sealed class ApprovalActionFunction
 {
+    /// <summary>Header App Service Easy Auth injects with the signed-in UPN.</summary>
+    private const string EasyAuthPrincipalNameHeader = "X-MS-CLIENT-PRINCIPAL-NAME";
+
+    // Referrer host fragments for the audit-trail channel guess. They identify
+    // Microsoft's own client hosts, not endpoints this app calls.
+    private const string TeamsRefererHost = "teams.microsoft.com";
+    private const string TeamsCloudRefererHost = "teams.cloud.microsoft";
+    private const string OutlookRefererHostPrefix = "outlook.";
+
     private readonly ActionTokenService _tokenService;
     private readonly BusinessCentralClient _bcClient;
     private readonly ActionTokenOptions _tokenOptions;
@@ -70,7 +79,7 @@ public sealed class ApprovalActionFunction
         CancellationToken cancellationToken)
     {
         var correlationId = Guid.NewGuid().ToString();
-        var token = req.Query["t"].FirstOrDefault();
+        var token = req.Query[ActionTokenService.TokenQueryParameter].FirstOrDefault();
 
         // ---- Hard guard: never run unauthenticated in production ------
         // A configuration mistake here writes a real approval on a real
@@ -115,7 +124,7 @@ public sealed class ApprovalActionFunction
         // Easy Auth injects this after Entra sign-in. It is what makes a card
         // posted to a shared Teams channel safe: everyone can see it, only the
         // named approver can act on it.
-        var signedInUpn = req.Headers["X-MS-CLIENT-PRINCIPAL-NAME"].FirstOrDefault();
+        var signedInUpn = req.Headers[EasyAuthPrincipalNameHeader].FirstOrDefault();
 
         if (_tokenOptions.RequireSignedInUser)
         {
@@ -205,13 +214,13 @@ public sealed class ApprovalActionFunction
     {
         var referer = req.Headers["Referer"].FirstOrDefault() ?? string.Empty;
 
-        if (referer.Contains("teams.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
-            referer.Contains("teams.cloud.microsoft", StringComparison.OrdinalIgnoreCase))
+        if (referer.Contains(TeamsRefererHost, StringComparison.OrdinalIgnoreCase) ||
+            referer.Contains(TeamsCloudRefererHost, StringComparison.OrdinalIgnoreCase))
         {
             return "Teams";
         }
 
-        if (referer.Contains("outlook.", StringComparison.OrdinalIgnoreCase))
+        if (referer.Contains(OutlookRefererHostPrefix, StringComparison.OrdinalIgnoreCase))
         {
             return "Outlook";
         }

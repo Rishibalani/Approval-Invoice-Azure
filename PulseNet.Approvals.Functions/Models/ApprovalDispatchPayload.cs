@@ -169,7 +169,12 @@ public sealed record ApproverInfo
     [JsonPropertyName("upn")] public string? Upn { get; init; }
     [JsonPropertyName("entraObjectId")] public string? EntraObjectId { get; init; }
     [JsonPropertyName("suspended")] public bool Suspended { get; init; }
-    [JsonPropertyName("fallbackChannel")] public string FallbackChannel { get; init; } = "Outlook";
+    /// <summary>
+    /// Channel Business Central wants tried when every requested one fails.
+    /// Null when the payload omits it; ChannelDispatcher then uses the
+    /// configured Channels:FallbackChannel rather than a value baked in here.
+    /// </summary>
+    [JsonPropertyName("fallbackChannel")] public string? FallbackChannel { get; init; }
     [JsonPropertyName("channels")] public IReadOnlyList<string> Channels { get; init; } = [];
 
     /// <summary>E.164 mobile number. WhatsApp only.</summary>
@@ -209,7 +214,11 @@ public sealed record PolicyInfo
     [JsonPropertyName("suppressionReasons")] public IReadOnlyList<string> SuppressionReasons { get; init; } = [];
     [JsonPropertyName("highValue")] public bool HighValue { get; init; }
     [JsonPropertyName("bankDetailsChanged")] public bool BankDetailsChanged { get; init; }
-    [JsonPropertyName("actionTokenTtlMinutes")] public int ActionTokenTtlMinutes { get; init; } = 30;
+    /// <summary>
+    /// Business Central's view of the button lifetime, informational only. The
+    /// TTL actually minted into tokens is ActionToken:TtlMinutes.
+    /// </summary>
+    [JsonPropertyName("actionTokenTtlMinutes")] public int ActionTokenTtlMinutes { get; init; }
     [JsonPropertyName("requiresSignedInApproval")] public bool RequiresSignedInApproval { get; init; }
 
     /// <summary>Set false to hide Delegate even when a substitute exists.</summary>

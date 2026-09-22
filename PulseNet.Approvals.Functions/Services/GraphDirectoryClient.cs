@@ -35,10 +35,9 @@ namespace PulseNet.Approvals.Functions.Services;
 /// </summary>
 public sealed class GraphDirectoryClient
 {
-    private const string GraphBase = "https://graph.microsoft.com/v1.0";
-
     private readonly HttpClient _http;
     private readonly TeamsBotOptions _options;
+    private readonly EntraOptions _entra;
     private readonly ILogger<GraphDirectoryClient> _logger;
 
     private string? _cachedToken;
@@ -52,12 +51,17 @@ public sealed class GraphDirectoryClient
     public GraphDirectoryClient(
         HttpClient http,
         IOptions<TeamsBotOptions> options,
+        IOptions<EntraOptions> entra,
         ILogger<GraphDirectoryClient> logger)
     {
         _http = http;
         _options = options.Value;
+        _entra = entra.Value;
         _logger = logger;
     }
+
+    /// <summary>TeamsBot:GraphBaseUrl without a trailing slash.</summary>
+    private string GraphBase => _options.GraphBaseUrl.TrimEnd('/');
 
     // ------------------------------------------------------------------
     //  Directory
@@ -80,7 +84,7 @@ public sealed class GraphDirectoryClient
         var url = $"{GraphBase}/users" +
                   "?$select=id,userPrincipalName,accountEnabled,userType" +
                   "&$filter=accountEnabled eq true and userType eq 'Member'" +
-                  "&$top=999";
+                  $"&$top={_options.GraphDirectoryPageSize}";
 
         var token = await GetTokenAsync(cancellationToken);
         var pages = 0;
@@ -262,7 +266,7 @@ public sealed class GraphDirectoryClient
 
     private async Task<string> GetTokenAsync(CancellationToken cancellationToken)
     {
-        if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+        if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
         {
             return _cachedToken;
         }
@@ -270,7 +274,7 @@ public sealed class GraphDirectoryClient
         await _tokenLock.WaitAsync(cancellationToken);
         try
         {
-            if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt.AddMinutes(-5))
+            if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt - _entra.TokenRefreshSkew)
             {
                 return _cachedToken;
             }
@@ -288,10 +292,10 @@ public sealed class GraphDirectoryClient
                 ["grant_type"] = "client_credentials",
                 ["client_id"] = clientId,
                 ["client_secret"] = clientSecret,
-                ["scope"] = TeamsBotOptions.GraphScope
+                ["scope"] = _options.GraphScope
             });
 
-            var tokenUrl = $"https://login.microsoftonline.com/{_options.TenantId}/oauth2/v2.0/token";
+            var tokenUrl = _entra.TokenEndpoint(_options.TenantId);
 
             using var response = await _http.PostAsync(tokenUrl, form, cancellationToken);
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -310,7 +314,9 @@ public sealed class GraphDirectoryClient
             _cachedToken = doc.RootElement.GetProperty("access_token").GetString()
                            ?? throw new InvalidOperationException("No access_token in the response.");
 
-            var expiresIn = doc.RootElement.TryGetProperty("expires_in", out var exp) ? exp.GetInt32() : 3000;
+            var expiresIn = doc.RootElement.TryGetProperty("expires_in", out var exp)
+                ? exp.GetInt32()
+                : throw new InvalidOperationException("Entra returned no expires_in.");
             _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn);
 
             return _cachedToken;

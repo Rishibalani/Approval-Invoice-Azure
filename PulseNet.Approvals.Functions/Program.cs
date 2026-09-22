@@ -8,9 +8,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using PulseNet.Approvals.Functions.Cards;
 using PulseNet.Approvals.Functions.Channels;
 using PulseNet.Approvals.Functions.Options;
+using PulseNet.Approvals.Functions.Options.Validation;
 using PulseNet.Approvals.Functions.Security;
 using PulseNet.Approvals.Functions.Services;
 
@@ -27,82 +29,137 @@ builder.ConfigureFunctionsWebApplication();
 //  Local: local.settings.json.
 //  Azure: App Settings, optionally fronted by Azure App Configuration with
 //  Key Vault references so a rotated secret takes effect without a redeploy.
-//  Set AppConfig__Endpoint to switch that on.
+//  Set AppConfig__Endpoint to switch that on; AppConfig__SentinelKey and
+//  AppConfig__RefreshIntervalSeconds are then required.
+//
+//  This runs before the options pipeline exists, so these three are read
+//  straight from configuration rather than through IOptions.
 // ════════════════════════════════════════════════════════════════════════
 
 var appConfigEndpoint = builder.Configuration["AppConfig:Endpoint"];
 
 if (!string.IsNullOrWhiteSpace(appConfigEndpoint))
 {
+    var sentinelKey = builder.Configuration["AppConfig:SentinelKey"];
+
+    if (string.IsNullOrWhiteSpace(sentinelKey))
+    {
+        throw new InvalidOperationException(
+            "AppConfig__SentinelKey is required when AppConfig__Endpoint is set.");
+    }
+
+    if (!int.TryParse(builder.Configuration["AppConfig:RefreshIntervalSeconds"], out var refreshSeconds) ||
+        refreshSeconds <= 0)
+    {
+        throw new InvalidOperationException(
+            "AppConfig__RefreshIntervalSeconds must be > 0 when AppConfig__Endpoint is set.");
+    }
+
     builder.Configuration.AddAzureAppConfiguration(options =>
     {
         options.Connect(new Uri(appConfigEndpoint), new DefaultAzureCredential())
                .ConfigureKeyVault(kv => kv.SetCredential(new DefaultAzureCredential()))
                .ConfigureRefresh(refresh =>
-                   refresh.Register("Dispatch:SigningSecret", refreshAll: false)
-                          .SetRefreshInterval(TimeSpan.FromMinutes(1)));
+                   refresh.Register(sentinelKey, refreshAll: false)
+                          .SetRefreshInterval(TimeSpan.FromSeconds(refreshSeconds)));
     });
 }
 
 // ════════════════════════════════════════════════════════════════════════
 //  OPTIONS
+//
+//  Strictly configuration-driven: no option class carries a code default for
+//  a configurable value. DataAnnotations cover the always-required settings;
+//  the IValidateOptions classes in Options/Validation cover the conditional
+//  ones (WhatsApp only when enabled, TeamsBot only in Bot mode, ...) and the
+//  bool/enum toggles whose absence a bound value cannot reveal. ValidateOnStart
+//  means a missing setting stops the host at startup, naming the app setting,
+//  instead of surfacing mid-approval.
 // ════════════════════════════════════════════════════════════════════════
 
 builder.Services
     .AddOptions<DispatchOptions>()
     .Bind(builder.Configuration.GetSection(DispatchOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
 
 builder.Services
     .AddOptions<ChannelOptions>()
     .Bind(builder.Configuration.GetSection(ChannelOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
+
+builder.Services.AddSingleton<IValidateOptions<ChannelOptions>, ChannelOptionsValidator>();
 
 builder.Services
     .AddOptions<ActionTokenOptions>()
     .Bind(builder.Configuration.GetSection(ActionTokenOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
+
+builder.Services.AddSingleton<IValidateOptions<ActionTokenOptions>, ActionTokenOptionsValidator>();
 
 builder.Services
     .AddOptions<BusinessCentralOptions>()
     .Bind(builder.Configuration.GetSection(BusinessCentralOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
 
 builder.Services
     .AddOptions<TeamsBotOptions>()
     .Bind(builder.Configuration.GetSection(TeamsBotOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddSingleton<IValidateOptions<TeamsBotOptions>, TeamsBotOptionsValidator>();
+
+builder.Services
+    .AddOptions<EntraOptions>()
+    .Bind(builder.Configuration.GetSection(EntraOptions.SectionName))
+    .ValidateDataAnnotations()
     .ValidateOnStart();
 
 // ════════════════════════════════════════════════════════════════════════
 //  STORAGE
 //
-//  Managed identity in Azure: set AzureWebJobsStorage__accountName and grant
-//  the Function's identity Storage Table and Queue Data Contributor. The
-//  emulator connection string during development.
+//  Connection string (the emulator during development): set AzureWebJobsStorage.
+//
+//  Managed identity in Azure: leave AzureWebJobsStorage unset and set
+//  AzureWebJobsStorage__tableServiceUri and AzureWebJobsStorage__queueServiceUri
+//  - the host's own identity-based connection settings, so the queue trigger
+//  and these clients read the same values - then grant the Function's
+//  identity Storage Table and Queue Data Contributor.
 // ════════════════════════════════════════════════════════════════════════
 
 builder.Services.AddAzureClients(clients =>
 {
     var storageConnection = builder.Configuration["AzureWebJobsStorage"];
-    var storageAccountName = builder.Configuration["AzureWebJobsStorage:accountName"];
 
-    if (!string.IsNullOrWhiteSpace(storageAccountName))
-    {
-        clients.AddTableServiceClient(
-            new Uri($"https://{storageAccountName}.table.core.windows.net"));
-
-        clients.AddQueueServiceClient(
-            new Uri($"https://{storageAccountName}.queue.core.windows.net"))
-            .ConfigureOptions(o => o.MessageEncoding = QueueMessageEncoding.Base64);
-
-        clients.UseCredential(new DefaultAzureCredential());
-    }
-    else
+    if (!string.IsNullOrWhiteSpace(storageConnection))
     {
         clients.AddTableServiceClient(storageConnection);
 
         clients.AddQueueServiceClient(storageConnection)
             .ConfigureOptions(o => o.MessageEncoding = QueueMessageEncoding.Base64);
+    }
+    else
+    {
+        var tableServiceUri = builder.Configuration["AzureWebJobsStorage:tableServiceUri"];
+        var queueServiceUri = builder.Configuration["AzureWebJobsStorage:queueServiceUri"];
+
+        if (string.IsNullOrWhiteSpace(tableServiceUri) || string.IsNullOrWhiteSpace(queueServiceUri))
+        {
+            throw new InvalidOperationException(
+                "Storage is not configured. Set AzureWebJobsStorage, or both " +
+                "AzureWebJobsStorage__tableServiceUri and AzureWebJobsStorage__queueServiceUri.");
+        }
+
+        clients.AddTableServiceClient(new Uri(tableServiceUri));
+
+        clients.AddQueueServiceClient(new Uri(queueServiceUri))
+            .ConfigureOptions(o => o.MessageEncoding = QueueMessageEncoding.Base64);
+
+        clients.UseCredential(new DefaultAzureCredential());
     }
 });
 
@@ -140,11 +197,15 @@ builder.Services.AddSingleton<ApprovalCardBuilder>();
 //  Registered against the concrete type first so the typed HttpClient is
 //  honoured, then exposed through IChannelSender. Registering the interface
 //  directly would build a second instance without the configured client.
+//
+//  Every HttpClient timeout below comes from its options class; the values
+//  are validated > 0 at startup.
 // ════════════════════════════════════════════════════════════════════════
 
-builder.Services.AddHttpClient<WorkflowWebhookSender>(client =>
+builder.Services.AddHttpClient<WorkflowWebhookSender>((sp, client) =>
 {
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<ChannelOptions>>().Value.Teams.WebhookHttpTimeoutSeconds);
 });
 
 builder.Services.AddSingleton<IChannelSender>(sp =>
@@ -154,18 +215,20 @@ builder.Services.AddSingleton<IChannelSender>(sp =>
 //  CHANNEL: TEAMS VIA BOT
 // ════════════════════════════════════════════════════════════════════════
 
-builder.Services.AddHttpClient<BotConnectorClient>(client =>
+builder.Services.AddHttpClient<BotConnectorClient>((sp, client) =>
 {
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<TeamsBotOptions>>().Value.HttpTimeoutSeconds);
 });
 
 // Bulk directory reads and Teams app installation, used by the provisioning
 // endpoint. Separate from BotConnectorClient because it is admin tooling
 // rather than part of the dispatch path.
-builder.Services.AddHttpClient<GraphDirectoryClient>(client =>
+builder.Services.AddHttpClient<GraphDirectoryClient>((sp, client) =>
 {
-    // Generous: a directory page of 999 users on a slow tenant.
-    client.Timeout = TimeSpan.FromSeconds(60);
+    // Usually generous: a full directory page on a slow tenant.
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<TeamsBotOptions>>().Value.GraphHttpTimeoutSeconds);
 });
 
 builder.Services.AddSingleton<ConversationReferenceStore>();
@@ -230,9 +293,10 @@ builder.Services.AddSingleton<IChannelSender, OutlookActionableMessageSender>();
 //  and the reply.
 // ════════════════════════════════════════════════════════════════════════
 
-builder.Services.AddHttpClient<WhatsAppClient>(client =>
+builder.Services.AddHttpClient<WhatsAppClient>((sp, client) =>
 {
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<ChannelOptions>>().Value.WhatsApp.HttpTimeoutSeconds);
 });
 
 builder.Services.AddSingleton<PendingRejectionStore>();
@@ -248,11 +312,12 @@ builder.Services.AddSingleton<IChannelSender>(sp =>
 
 builder.Services.AddSingleton<ChannelDispatcher>();
 
-builder.Services.AddHttpClient<BusinessCentralClient>(client =>
+builder.Services.AddHttpClient<BusinessCentralClient>((sp, client) =>
 {
-    // Generous: an approval callback that times out leaves the approver
-    // staring at a spinner with no idea whether it worked.
-    client.Timeout = TimeSpan.FromSeconds(60);
+    // Usually generous: an approval callback that times out leaves the
+    // approver staring at a spinner with no idea whether it worked.
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<BusinessCentralOptions>>().Value.HttpTimeoutSeconds);
 });
 
 // ════════════════════════════════════════════════════════════════════════

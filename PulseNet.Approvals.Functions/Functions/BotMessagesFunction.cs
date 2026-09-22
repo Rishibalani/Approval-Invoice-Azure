@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PulseNet.Approvals.Functions.Cards;
 using PulseNet.Approvals.Functions.Models;
 using PulseNet.Approvals.Functions.Options;
 using PulseNet.Approvals.Functions.Security;
@@ -373,7 +374,7 @@ public sealed class BotMessagesFunction
         new OkObjectResult(new
         {
             statusCode = 200,
-            type = "application/vnd.microsoft.card.adaptive",
+            type = AdaptiveCardSchema.ContentType,
             value = JsonSerializer.Deserialize<JsonElement>(card.ToJsonString())
         });
 
@@ -381,8 +382,8 @@ public sealed class BotMessagesFunction
         new()
         {
             ["type"] = "AdaptiveCard",
-            ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
-            ["version"] = "1.4",
+            ["$schema"] = AdaptiveCardSchema.SchemaUri,
+            ["version"] = AdaptiveCardSchema.Version14,
             ["body"] = new JsonArray
             {
                 new JsonObject
@@ -410,8 +411,8 @@ public sealed class BotMessagesFunction
         new()
         {
             ["type"] = "AdaptiveCard",
-            ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
-            ["version"] = "1.4",
+            ["$schema"] = AdaptiveCardSchema.SchemaUri,
+            ["version"] = AdaptiveCardSchema.Version14,
             ["body"] = new JsonArray
             {
                 new JsonObject
