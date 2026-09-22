@@ -190,8 +190,12 @@ public sealed class BotMessagesFunction
         // entirely, so the server is the only place this can actually hold.
         if (isReject && _outlookOptions.RequireRejectionReason && string.IsNullOrWhiteSpace(comment))
         {
-            return CardResponse(NoticeCard(
-                "Please give a reason for rejecting this invoice, then confirm again."));
+            // A message response, not a card: Teams shows it as a short notice
+            // and LEAVES THE CARD AS IT IS, so the approver can type the reason
+            // in the comment box and press Reject again. Returning a card here
+            // would replace the approval card and take its buttons away.
+            return MessageResponse(
+                "Please type a reason for rejecting in the comment box, then press Reject again.");
         }
 
         // Business Central re-checks authority, status, amount and the change
@@ -370,6 +374,18 @@ public sealed class BotMessagesFunction
     /// particular about it: statusCode, type and value are all required, and
     /// the type string must be exactly this.
     /// </summary>
+    /// <summary>
+    /// Universal Actions "message" response: a short text Teams displays to the
+    /// person who pressed the button, without changing the card.
+    /// </summary>
+    private static IActionResult MessageResponse(string text) =>
+        new OkObjectResult(new
+        {
+            statusCode = 200,
+            type = "application/vnd.microsoft.activity.message",
+            value = text
+        });
+
     private static IActionResult CardResponse(JsonObject card) =>
         new OkObjectResult(new
         {

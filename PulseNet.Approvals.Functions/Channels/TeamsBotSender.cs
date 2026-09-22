@@ -41,6 +41,7 @@ public sealed class TeamsBotSender : IChannelSender
     private readonly ConversationReferenceStore _conversations;
     private readonly SentCardStore _sentCards;
     private readonly ApprovalCardBuilder _cardBuilder;
+    private readonly BusinessCentralClient _bcClient;
     private readonly TeamsBotOptions _options;
     private readonly ILogger<TeamsBotSender> _logger;
 
@@ -52,6 +53,7 @@ public sealed class TeamsBotSender : IChannelSender
         ConversationReferenceStore conversations,
         SentCardStore sentCards,
         ApprovalCardBuilder cardBuilder,
+        BusinessCentralClient bcClient,
         IOptions<TeamsBotOptions> options,
         ILogger<TeamsBotSender> logger)
     {
@@ -59,6 +61,7 @@ public sealed class TeamsBotSender : IChannelSender
         _conversations = conversations;
         _sentCards = sentCards;
         _cardBuilder = cardBuilder;
+        _bcClient = bcClient;
         _options = options.Value;
         _logger = logger;
     }
@@ -126,6 +129,11 @@ public sealed class TeamsBotSender : IChannelSender
                 DocumentNo = payload.Document.DocumentNo
             }, cancellationToken);
 
+            // The card reached the approver, so this object ID is proven
+            // correct. Store it on their Approval User Setup row now - the next
+            // payload then carries it and Graph is not asked again.
+            await WriteBackObjectIdAsync(payload, aadObjectId, cancellationToken);
+
             return ChannelSendResult.Ok(Channel, $"{conversationId}|{activityId}");
         }
         catch (Exception ex)
@@ -163,7 +171,7 @@ public sealed class TeamsBotSender : IChannelSender
             if (resolved is not null)
             {
                 _logger.LogInformation(
-                    "Resolved {Upn} to an Entra object ID. Cache it in Business Central to avoid repeating this.",
+                    "Resolved {Upn} to an Entra object ID via Graph. It is written back to Business Central once the card is delivered.",
                     payload.Approver.Upn);
 
                 return resolved;
@@ -175,6 +183,55 @@ public sealed class TeamsBotSender : IChannelSender
             payload.Approver.UserId);
 
         return null;
+    }
+
+    /// <summary>
+    /// Best-effort: a failure here is logged and never fails a send that has
+    /// already succeeded. Matched on the Business Central user id, which the
+    /// payload carries exactly - not on email, which may differ from the UPN.
+    /// </summary>
+    private async Task WriteBackObjectIdAsync(
+        ApprovalDispatchPayload payload,
+        string aadObjectId,
+        CancellationToken cancellationToken)
+    {
+        // Already stored in Business Central and sent with the payload.
+        if (!string.IsNullOrWhiteSpace(payload.Approver.EntraObjectId))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Approver.UserId))
+        {
+            _logger.LogWarning(
+                "Teams card sent but the payload has no approver user id; Entra object ID not written back.");
+            return;
+        }
+
+        try
+        {
+            var written = await _bcClient.SetEntraObjectIdAsync(
+                payload.Approver.UserId, aadObjectId, cancellationToken);
+
+            if (written)
+            {
+                _logger.LogInformation(
+                    "Stored the Entra object ID for {Approver} on Approval User Setup.",
+                    payload.Approver.UserId);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Could not store the Entra object ID for {Approver} in Business Central. " +
+                    "The card was delivered; the ID will be resolved from Graph again next time.",
+                    payload.Approver.UserId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Writing the Entra object ID for {Approver} threw. Not fatal.", payload.Approver.UserId);
+        }
     }
 
     private async Task<(string? ConversationId, string ServiceUrl)> ResolveConversationAsync(

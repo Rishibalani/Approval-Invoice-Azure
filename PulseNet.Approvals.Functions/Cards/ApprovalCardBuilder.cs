@@ -33,12 +33,15 @@ public sealed class ApprovalCardBuilder
     public ApprovalCardBuilder(IOptions<ChannelOptions> options) => _options = options.Value;
 
     /// <summary>
-    /// 1.5 unlocks Input.Text validation and the refresh block. Teams renders
-    /// it and the Workflows webhook path renders it. Outlook actionable
-    /// messages do NOT - that channel is capped at 1.0, which is why
-    /// PlainEmailSender builds its own simpler body.
+    /// 1.4, not 1.5. Teams mobile (iOS and Android) silently drops a 1.5 card
+    /// sent by a bot - the message arrives as an empty space - while desktop
+    /// renders it. The outcome and notice cards were always 1.4 and did show on
+    /// phones; this card was the only 1.5 one.
+    ///
+    /// Nothing on the card needs 1.5: Input.Text label / isRequired /
+    /// errorMessage are 1.3, Action.Execute and the refresh block are 1.4.
     /// </summary>
-    private const string AdaptiveCardVersion = "1.5";
+    private const string AdaptiveCardVersion = AdaptiveCardSchema.Version14;
 
     public JsonObject Build(
         ApprovalDispatchPayload payload,
@@ -72,7 +75,7 @@ public sealed class ApprovalCardBuilder
             // stuck.
             ["fallbackText"] = BuildFallbackText(vm),
 
-            ["body"] = BuildBody(vm, payload),
+            ["body"] = BuildBody(vm, payload, actionMode),
             ["actions"] = BuildActions(vm, payload, actionMode, approveUrl, rejectUrl)
         };
 
@@ -116,7 +119,8 @@ public sealed class ApprovalCardBuilder
     //  Body
     // ------------------------------------------------------------------
 
-    private static JsonArray BuildBody(ApprovalCardViewModel vm, ApprovalDispatchPayload payload)
+    private static JsonArray BuildBody(
+        ApprovalCardViewModel vm, ApprovalDispatchPayload payload, ChannelActionMode actionMode)
     {
         var body = new JsonArray { BuildHeader(vm) };
 
@@ -163,6 +167,32 @@ public sealed class ApprovalCardBuilder
         if (vm.ChainContext is not null)
         {
             body.Add(Text(vm.ChainContext, size: "Small", subtle: true, spacing: "Medium", separator: true));
+        }
+
+        // The comment box sits in the card body, directly above the buttons.
+        //
+        // It used to live inside an Action.ShowCard (a pop-out panel per
+        // button with its own confirm button). Teams on iOS and Android does
+        // not display a bot-sent card built that way - the message arrived as
+        // an empty space - while desktop did. A flat card with one input and
+        // plain Action.Execute buttons is the shape Teams mobile renders.
+        //
+        // Deliberately no "label", "isRequired" or "errorMessage": those make
+        // the client refuse to submit Approve too when the box is empty. The
+        // rejection reason is enforced by the bot instead, which answers an
+        // empty Reject with a short message and leaves the card as it is.
+        if (actionMode == ChannelActionMode.Native)
+        {
+            body.Add(Text("Comment (required to reject)", size: "Small", subtle: true, spacing: "Medium"));
+            body.Add(new JsonObject
+            {
+                ["type"] = "Input.Text",
+                ["id"] = "comment",
+                ["isMultiline"] = true,
+                ["maxLength"] = 250,
+                ["placeholder"] = "Recorded against the approval entry in Business Central",
+                ["spacing"] = "Small"
+            });
         }
 
         return body;
@@ -256,12 +286,12 @@ public sealed class ApprovalCardBuilder
         var items = new JsonArray
         {
             Text("Lines", size: "Small", bold: true),
-            LineRow("Description", "Qty", "Amount", header: true)
+            LineRow("Description", "Qty", "UoM", "Amount", header: true)
         };
 
         foreach (var line in vm.Lines)
         {
-            items.Add(LineRow(line.Description, line.Quantity, line.Amount));
+            items.Add(LineRow(line.Description, line.Quantity, line.UnitOfMeasure, line.Amount));
         }
 
         if (vm.HiddenLineCount > 0)
@@ -280,7 +310,16 @@ public sealed class ApprovalCardBuilder
         };
     }
 
-    private static JsonObject LineRow(string description, string qty, string amount, bool header = false) =>
+    // Fixed relative column widths, identical on every row. "auto" sizes each
+    // row's columns to that row's own text, so Qty / UoM / Amount drifted out
+    // of line from row to row. Weighted widths are shared by all rows, so the
+    // header and every line sit in the same columns on desktop and mobile.
+    private const int DescriptionWeight = 44;
+    private const int QtyWeight = 10;
+    private const int UomWeight = 12;
+    private const int AmountWeight = 34;
+
+    private static JsonObject LineRow(string description, string qty, string uom, string amount, bool header = false) =>
         new()
         {
             ["type"] = "ColumnSet",
@@ -288,25 +327,25 @@ public sealed class ApprovalCardBuilder
             ["separator"] = !header,
             ["columns"] = new JsonArray
             {
-                new JsonObject
-                {
-                    ["type"] = "Column",
-                    ["width"] = "stretch",
-                    ["items"] = new JsonArray { Text(description, size: "Small", subtle: header) }
-                },
-                new JsonObject
-                {
-                    ["type"] = "Column",
-                    ["width"] = "auto",
-                    ["items"] = new JsonArray { Text(qty, size: "Small", subtle: header, align: "Right", wrap: false) }
-                },
-                new JsonObject
-                {
-                    ["type"] = "Column",
-                    ["width"] = "auto",
-                    ["items"] = new JsonArray { Text(amount, size: "Small", subtle: header, align: "Right", wrap: false) }
-                }
+                LineCell(DescriptionWeight, description, header, align: "Left"),
+                LineCell(QtyWeight, qty, header, align: "Right"),
+                // A blank unit still needs text, or the cell collapses. A
+                // non-breaking space, not " ": mobile renderers can reject a
+                // TextBlock whose text is only ordinary whitespace.
+                LineCell(UomWeight, string.IsNullOrEmpty(uom) ? "\u00A0" : uom, header, align: "Center"),
+                LineCell(AmountWeight, amount, header, align: "Right")
             }
+        };
+
+    private static JsonObject LineCell(int weight, string text, bool header, string align) =>
+        new()
+        {
+            ["type"] = "Column",
+            ["width"] = weight,
+            ["verticalContentAlignment"] = "Top",
+            // wrap on: on a narrow phone a long amount wraps inside its own
+            // column instead of being cut off or pushing the others.
+            ["items"] = new JsonArray { Text(text, size: "Small", subtle: header, align: align, wrap: true) }
         };
 
     /// <summary>
@@ -365,25 +404,13 @@ public sealed class ApprovalCardBuilder
         switch (actionMode)
         {
             case ChannelActionMode.Native:
-                // Inline comment capture is only possible here. Action.Execute
-                // posts the ShowCard's inputs back to the bot. A webhook card
-                // has nothing to post to, which is why Link mode below sends
-                // the approver to a web page to type a rejection reason.
-                actions.Add(ExecuteWithComment(
-                    title: "Approve",
-                    verb: "approval/approve",
-                    style: "positive",
-                    label: "Comment (optional)",
-                    required: false,
-                    payload: payload));
-
-                actions.Add(ExecuteWithComment(
-                    title: "Reject",
-                    verb: "approval/reject",
-                    style: "destructive",
-                    label: "Reason for rejection",
-                    required: true,
-                    payload: payload));
+                // Inline comment capture is only possible here: Action.Execute
+                // posts the body's comment input back to the bot (Teams merges
+                // it into action.data). A webhook card has nothing to post to,
+                // which is why Link mode below sends the approver to a web page
+                // to type a rejection reason.
+                actions.Add(Execute("Approve", "approval/approve", "positive", payload));
+                actions.Add(Execute("Reject", "approval/reject", "destructive", payload));
 
                 if (vm.SubstituteName is not null && payload.Policy.CanDelegateInChannel)
                 {
@@ -442,55 +469,15 @@ public sealed class ApprovalCardBuilder
         return actions;
     }
 
-    private static JsonObject ExecuteWithComment(
-        string title, string verb, string style, string label, bool required,
-        ApprovalDispatchPayload payload)
-    {
-        var input = new JsonObject
+    private static JsonObject Execute(string title, string verb, string style, ApprovalDispatchPayload payload) =>
+        new()
         {
-            ["type"] = "Input.Text",
-            ["id"] = "comment",
-            ["label"] = label,
-            ["isMultiline"] = true,
-            ["maxLength"] = 250
-        };
-
-        if (required)
-        {
-            // Client-side gate only. The bot re-checks server-side; an
-            // Adaptive Card input is a convenience, never a control.
-            input["isRequired"] = true;
-            input["errorMessage"] = "A rejection reason is required.";
-        }
-        else
-        {
-            input["placeholder"] = "Recorded against the approval entry in Business Central";
-        }
-
-        return new JsonObject
-        {
-            ["type"] = "Action.ShowCard",
+            ["type"] = "Action.Execute",
             ["title"] = title,
             ["style"] = style,
-            ["card"] = new JsonObject
-            {
-                ["type"] = "AdaptiveCard",
-                ["version"] = AdaptiveCardVersion,
-                ["body"] = new JsonArray { input },
-                ["actions"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["type"] = "Action.Execute",
-                        ["title"] = required ? "Confirm rejection" : "Confirm approval",
-                        ["style"] = style,
-                        ["verb"] = verb,
-                        ["data"] = ActionData(payload)
-                    }
-                }
-            }
+            ["verb"] = verb,
+            ["data"] = ActionData(payload)
         };
-    }
 
     /// <summary>
     /// Plain text for a client that cannot render the card.

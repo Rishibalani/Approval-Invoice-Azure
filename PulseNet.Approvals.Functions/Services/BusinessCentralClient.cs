@@ -229,7 +229,9 @@ public sealed class BusinessCentralClient
     public async Task<IReadOnlyList<ApproverIdentity>> GetApproverIdentitiesAsync(
         CancellationToken cancellationToken)
     {
-        var url = _options.IdentitiesUrl + "?$select=systemId,userId,upn,entraObjectId,suspended";
+        // notificationsSuspended is the API page field name. "suspended" does
+        // not exist and made Business Central reject the whole query (400).
+        var url = _options.IdentitiesUrl + "?$select=systemId,userId,upn,entraObjectId,notificationsSuspended";
 
         try
         {
@@ -266,7 +268,7 @@ public sealed class BusinessCentralClient
                     UserId = Str(row, "userId"),
                     Upn = Str(row, "upn"),
                     EntraObjectId = Str(row, "entraObjectId"),
-                    Suspended = row.TryGetProperty("suspended", out var sus) && sus.GetBoolean()
+                    Suspended = row.TryGetProperty("notificationsSuspended", out var sus) && sus.GetBoolean()
                 });
             }
 
@@ -306,6 +308,13 @@ public sealed class BusinessCentralClient
 
             if (!lookupResponse.IsSuccessStatusCode)
             {
+                var errorText = await lookupResponse.Content.ReadAsStringAsync(cancellationToken);
+
+                _logger.LogError(
+                    "Looking up the approver identity for {UserId} failed: {Status} {Body}. " +
+                    "Is PN Approver Identity API (page 50108) published, and can the service account read User Setup?",
+                    userId, (int)lookupResponse.StatusCode, Truncate(errorText, 300));
+
                 return false;
             }
 
@@ -316,7 +325,7 @@ public sealed class BusinessCentralClient
                 rows.GetArrayLength() == 0)
             {
                 _logger.LogWarning(
-                    "No approver identity row for {UserId}. Run Import From Approval User Setup first.",
+                    "No Approval User Setup row for {UserId}; Entra object ID not stored.",
                     userId);
 
                 return false;

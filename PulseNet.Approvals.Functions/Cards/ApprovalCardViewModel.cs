@@ -39,7 +39,7 @@ public sealed record ApprovalCardViewModel
     public int HiddenLineCount { get; init; }
 
     public sealed record CardFact(string Title, string Value);
-    public sealed record CardLine(string Description, string Quantity, string Amount);
+    public sealed record CardLine(string Description, string Quantity, string UnitOfMeasure, string Amount);
 
     private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
 
@@ -89,7 +89,7 @@ public sealed record ApprovalCardViewModel
             SubstituteName = Trim(p.Approver.SubstituteName),
 
             Facts = BuildFacts(p, currency, exclTax, inclTax, fallbackCurrencyCode),
-            Lines = BuildLines(doc, maxLinesOnCard),
+            Lines = BuildLines(doc, currency, fallbackCurrencyCode, maxLinesOnCard),
             HiddenLineCount = Math.Max(0, trueLineCount - shownLineCount)
         };
     }
@@ -117,11 +117,17 @@ public sealed record ApprovalCardViewModel
 
         Add("Their reference", doc.ExternalDocumentNo);
 
+        // Same rule as the Outlook email (PN Approval Email Sender): the tax
+        // breakdown when there is tax, otherwise a single Amount row.
         if (doc.HasTaxBreakdown && exclTax != inclTax)
         {
             Add("Amount excl. tax", Money(exclTax, currency, fallbackCurrencyCode));
             if (doc.TaxAmount > 0) Add("Tax", Money(doc.TaxAmount, currency, fallbackCurrencyCode));
             Add("Amount incl. tax", Money(inclTax, currency, fallbackCurrencyCode));
+        }
+        else
+        {
+            Add("Amount", Money(inclTax, currency, fallbackCurrencyCode));
         }
 
         // Local value is only interesting on a foreign-currency document.
@@ -154,18 +160,20 @@ public sealed record ApprovalCardViewModel
         return facts;
     }
 
-    private static IReadOnlyList<CardLine> BuildLines(DocumentInfo doc, int maxLinesOnCard)
+    private static IReadOnlyList<CardLine> BuildLines(
+        DocumentInfo doc, string? currency, string fallbackCurrencyCode, int maxLinesOnCard)
     {
         if (doc.Lines is null || doc.Lines.Count == 0) return [];
 
+        // Quantity and unit of measure in separate columns; amount carries the
+        // currency, as in the Outlook email.
         return doc.Lines
             .Take(maxLinesOnCard)
             .Select(l => new CardLine(
                 Description: string.IsNullOrWhiteSpace(l.Description) ? "(no description)" : l.Description,
-                Quantity: string.IsNullOrWhiteSpace(l.UnitOfMeasure)
-                    ? l.Quantity.ToString("0.##", Ci)
-                    : $"{l.Quantity.ToString("0.##", Ci)} {l.UnitOfMeasure}",
-                Amount: l.LineAmount.ToString("N2", Ci)))
+                Quantity: l.Quantity.ToString("0.#####", Ci),
+                UnitOfMeasure: Trim(l.UnitOfMeasure) ?? string.Empty,
+                Amount: Money(l.LineAmount, currency, fallbackCurrencyCode)))
             .ToList();
     }
 

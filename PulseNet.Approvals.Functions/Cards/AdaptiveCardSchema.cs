@@ -15,6 +15,9 @@ public static class AdaptiveCardSchema
     /// <summary>Attachment content type for an Adaptive Card in a Bot Framework / Teams message.</summary>
     public const string ContentType = "application/vnd.microsoft.card.adaptive";
 
-    /// <summary>Card version used by the small outcome and notice cards.</summary>
+    /// <summary>
+    /// Card version for every card this app sends, including the approval card.
+    /// Teams mobile does not render bot-sent 1.5 cards - keep this at 1.4.
+    /// </summary>
     public const string Version14 = "1.4";
 }
