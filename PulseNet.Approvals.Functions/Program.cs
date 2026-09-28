@@ -113,6 +113,36 @@ builder.Services
 
 builder.Services.AddSingleton<IValidateOptions<TeamsBotOptions>, TeamsBotOptionsValidator>();
 
+// The architectural switch between the custom bot (Option A) and Power
+// Automate card delivery (Option D). The app setting is plain
+// USE_POWER_AUTOMATE_CARDS with no section prefix.
+//
+// WHY THIS IS READ RATHER THAN BOUND
+//
+// Binding FeatureFlagOptions to the configuration ROOT would work only through
+// the [ConfigurationKeyName] attribute on a root-level key - a quiet dependency
+// on binder behaviour for the one setting that decides which architecture runs.
+// Worse, a bool cannot tell "false" from "missing" once bound, and .ValidateOnStart()
+// with no validator registered checks nothing. One read, one parse, one error
+// message naming the app setting is both simpler and stricter.
+var usePowerAutomateCardsSetting = builder.Configuration["USE_POWER_AUTOMATE_CARDS"];
+
+if (string.IsNullOrWhiteSpace(usePowerAutomateCardsSetting))
+{
+    throw new InvalidOperationException(
+        "USE_POWER_AUTOMATE_CARDS is required. true = deliver Teams cards through Power Automate (Option D); " +
+        "false = deliver them through the custom Teams bot (Option A).");
+}
+
+if (!bool.TryParse(usePowerAutomateCardsSetting, out var usePowerAutomateCards))
+{
+    throw new InvalidOperationException(
+        $"USE_POWER_AUTOMATE_CARDS must be true or false, not '{usePowerAutomateCardsSetting}'.");
+}
+
+builder.Services.Configure<FeatureFlagOptions>(
+    options => options.UsePowerAutomateCards = usePowerAutomateCards);
+
 builder.Services
     .AddOptions<EntraOptions>()
     .Bind(builder.Configuration.GetSection(EntraOptions.SectionName))
@@ -309,6 +339,23 @@ builder.Services.AddSingleton<IChannelSender>(sp =>
 // ════════════════════════════════════════════════════════════════════════
 //  DISPATCH AND CALLBACK
 // ════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════
+//  CHANNEL: TEAMS VIA POWER AUTOMATE (OPTION D)
+//
+//  Registered whatever USE_POWER_AUTOMATE_CARDS says, exactly like the bot
+//  sender beside it. The dispatcher picks between them at send time, so
+//  switching architecture is a setting and a restart - no redeploy.
+// ════════════════════════════════════════════════════════════════════════
+
+builder.Services.AddHttpClient<PowerAutomateCardSender>((sp, client) =>
+{
+    client.Timeout = TimeSpan.FromSeconds(
+        sp.GetRequiredService<IOptions<ChannelOptions>>().Value.Teams.PowerAutomateHttpTimeoutSeconds);
+});
+
+builder.Services.AddSingleton<IChannelSender>(sp =>
+    sp.GetRequiredService<PowerAutomateCardSender>());
 
 builder.Services.AddSingleton<ChannelDispatcher>();
 

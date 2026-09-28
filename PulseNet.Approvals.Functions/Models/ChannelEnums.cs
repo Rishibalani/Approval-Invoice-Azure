@@ -26,7 +26,19 @@ public enum ChannelDeliveryMode
     ActionableMessage = 4,
 
     /// <summary>WhatsApp utility template via Meta Cloud API. Needs template approval.</summary>
-    WhatsAppTemplate = 5
+    WhatsAppTemplate = 5,
+
+    /// <summary>
+    /// Teams, via a Power Automate flow that posts OUR Adaptive Card with
+    /// "Post adaptive card and wait for a response" and calls us back with the
+    /// press (Option D). No Azure Bot, no Teams app package, no per-user
+    /// install - the Workflows (Flow) bot delivers the chat message.
+    ///
+    /// Selected by the USE_POWER_AUTOMATE_CARDS app setting, not by
+    /// Channels:Teams:DeliveryMode, so the bot path stays configured and one
+    /// setting switches between them.
+    /// </summary>
+    PowerAutomateCard = 6
 }
 
 /// <summary>
@@ -55,7 +67,17 @@ public enum ChannelActionMode
     /// Channel-native interaction: Action.Execute, Action.Http, quick-reply.
     /// Better UX, but each one needs its own registration.
     /// </summary>
-    Native = 2
+    Native = 2,
+
+    /// <summary>
+    /// Action.Submit buttons whose data carries a signed action token. The
+    /// press is collected by whoever posted the card - in Option D, the Power
+    /// Automate flow - and handed back to us on the flow callback endpoint.
+    ///
+    /// Distinct from Native because there is no bot to answer an invoke, and
+    /// distinct from Link because nothing opens a browser.
+    /// </summary>
+    Submit = 3
 }
 
 public enum ApprovalAction

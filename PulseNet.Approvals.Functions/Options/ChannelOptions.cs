@@ -99,6 +99,36 @@ public sealed class TeamsChannelOptions
     public int WebhookHttpTimeoutSeconds { get; set; }
 
     /// <summary>
+    /// OPTION D. The Power Automate flow's "When an HTTP request is received"
+    /// URL. We POST the approver, a summary and our Adaptive Card JSON to it;
+    /// the flow posts the card into the approver's chat and waits for the
+    /// press.
+    ///
+    /// The URL carries its own signature, so it IS a secret - keep it in Key
+    /// Vault. Required when USE_POWER_AUTOMATE_CARDS is true.
+    /// </summary>
+    public string PowerAutomateFlowUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// OPTION D. HttpClient timeout, in seconds, for handing the card to the
+    /// flow. Separate from WebhookHttpTimeoutSeconds because the two are
+    /// different endpoints: this one only has to accept the card, since the
+    /// waiting happens inside the flow. Required when USE_POWER_AUTOMATE_CARDS
+    /// is true.
+    /// </summary>
+    public int PowerAutomateHttpTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// OPTION D. Shared secret the flow sends back on the callback, in the
+    /// x-pn-flow-secret header, and the only thing that stops anyone who
+    /// finds the callback URL from replaying decisions at it.
+    ///
+    /// Different from every other secret in this app: it protects one hop.
+    /// Required when USE_POWER_AUTOMATE_CARDS is true.
+    /// </summary>
+    public string FlowCallbackSecret { get; set; } = string.Empty;
+
+    /// <summary>
     /// Full-width cards. A desktop nicety and a known source of mobile
     /// rendering trouble, so normally false. Turn on only if the phones in use
     /// are known to handle it. Must be present when Teams is enabled.

@@ -41,17 +41,20 @@ public sealed class ChannelDispatcher
     private readonly IEnumerable<IChannelSender> _senders;
     private readonly ActionTokenService _tokenService;
     private readonly ChannelOptions _options;
+    private readonly FeatureFlagOptions _features;
     private readonly ILogger<ChannelDispatcher> _logger;
 
     public ChannelDispatcher(
         IEnumerable<IChannelSender> senders,
         ActionTokenService tokenService,
         IOptions<ChannelOptions> options,
+        IOptions<FeatureFlagOptions> features,
         ILogger<ChannelDispatcher> logger)
     {
         _senders = senders;
         _tokenService = tokenService;
         _options = options.Value;
+        _features = features.Value;
         _logger = logger;
     }
 
@@ -204,6 +207,31 @@ public sealed class ChannelDispatcher
         string? approveUrl = null;
         string? rejectUrl = null;
 
+        // Submit mode (Option D) mints the same two tokens, but they travel
+        // inside the card's action data instead of inside a URL. The sender
+        // receives them in these two arguments.
+        if (actionMode == ChannelActionMode.Submit)
+        {
+            if (string.IsNullOrWhiteSpace(payload.Approver.Upn))
+            {
+                _logger.LogWarning(
+                    "No UPN for {Approver}; falling back to notify-only on {Channel}.",
+                    payload.Approver.UserId, channel);
+
+                actionMode = ChannelActionMode.NotifyOnly;
+            }
+            else
+            {
+                approveUrl = _tokenService.Mint(
+                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Approve,
+                    payload.Policy.ActionTokensExpire);
+
+                rejectUrl = _tokenService.Mint(
+                    payload.Approval.ApprovalEntryNo, payload.Approver.Upn, ApprovalAction.Reject,
+                    payload.Policy.ActionTokensExpire);
+            }
+        }
+
         if (actionMode == ChannelActionMode.Link)
         {
             if (string.IsNullOrWhiteSpace(payload.Approver.Upn))
@@ -291,12 +319,24 @@ public sealed class ChannelDispatcher
     }
 
     /// <summary>
-    /// How this channel is physically reached. Transport only - this never
-    /// decides whether a channel is used, only how.
+    /// Which transport carries a channel, and what its buttons do. Transport
+    /// only - this never decides whether a channel is used, only how.
+    ///
+    /// Teams is the one channel with an architectural switch. When
+    /// USE_POWER_AUTOMATE_CARDS is true, Teams goes through the Power Automate
+    /// flow with Action.Submit buttons (Option D) whatever
+    /// Channels:Teams:DeliveryMode says - that setting is left as it is so the
+    /// bot path is still configured and one setting flips back to it.
     /// </summary>
     private (ChannelDeliveryMode Delivery, ChannelActionMode Action) GetTransport(ApprovalChannel channel) =>
         channel switch
         {
+            // Disabled still wins. Channels:Teams:DeliveryMode stays the
+            // Azure-side off switch for Teams; the flag only chooses WHICH
+            // transport carries it when it is on.
+            ApprovalChannel.Teams when _features.UsePowerAutomateCards &&
+                                       _options.Teams.DeliveryMode != ChannelDeliveryMode.Disabled =>
+                (ChannelDeliveryMode.PowerAutomateCard, ChannelActionMode.Submit),
             ApprovalChannel.Teams => (_options.Teams.DeliveryMode, _options.Teams.ActionMode),
             ApprovalChannel.Outlook => (_options.Outlook.DeliveryMode, _options.Outlook.ActionMode),
             ApprovalChannel.WhatsApp => (_options.WhatsApp.DeliveryMode, _options.WhatsApp.ActionMode),

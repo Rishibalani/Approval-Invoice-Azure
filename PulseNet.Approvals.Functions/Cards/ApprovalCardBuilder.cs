@@ -43,6 +43,12 @@ public sealed class ApprovalCardBuilder
     /// </summary>
     private const string AdaptiveCardVersion = AdaptiveCardSchema.Version14;
 
+    /// <param name="approveUrl">
+    /// Link mode: the full Approve URL. Submit mode (Option D): the raw signed
+    /// Approve token, which travels inside the card's own action data instead
+    /// of in a URL.
+    /// </param>
+    /// <param name="rejectUrl">The same, for Reject.</param>
     public JsonObject Build(
         ApprovalDispatchPayload payload,
         ChannelActionMode actionMode,
@@ -181,7 +187,7 @@ public sealed class ApprovalCardBuilder
         // the client refuse to submit Approve too when the box is empty. The
         // rejection reason is enforced by the bot instead, which answers an
         // empty Reject with a short message and leaves the card as it is.
-        if (actionMode == ChannelActionMode.Native)
+        if (actionMode is ChannelActionMode.Native or ChannelActionMode.Submit)
         {
             body.Add(Text("Comment (required to reject)", size: "Small", subtle: true, spacing: "Medium"));
             body.Add(new JsonObject
@@ -424,6 +430,23 @@ public sealed class ApprovalCardBuilder
                 }
                 break;
 
+            case ChannelActionMode.Submit:
+                // Option D. No bot answers these; the Power Automate flow
+                // collects the press and hands it to our flow callback. The
+                // signed token rides in the action data, so the flow never has
+                // to be trusted with who may approve what - our endpoint
+                // re-checks the token, the approver and Business Central.
+                if (!string.IsNullOrWhiteSpace(approveUrl))
+                {
+                    actions.Add(Submit("Approve", FlowContract.ActionApprove, approveUrl!, "positive", payload));
+                }
+
+                if (!string.IsNullOrWhiteSpace(rejectUrl))
+                {
+                    actions.Add(Submit("Reject", FlowContract.ActionReject, rejectUrl!, "destructive", payload));
+                }
+                break;
+
             case ChannelActionMode.Link:
                 if (!string.IsNullOrWhiteSpace(approveUrl))
                 {
@@ -467,6 +490,27 @@ public sealed class ApprovalCardBuilder
         }
 
         return actions;
+    }
+
+    /// <summary>
+    /// An Action.Submit button for Option D. Teams merges the card's inputs
+    /// (the comment box) into this data when it is pressed, and Power Automate
+    /// hands the whole object back to us.
+    /// </summary>
+    private static JsonObject Submit(
+        string title, string action, string token, string style, ApprovalDispatchPayload payload)
+    {
+        var data = ActionData(payload);
+        data[FlowContract.DataAction] = action;
+        data[FlowContract.DataToken] = token;
+
+        return new JsonObject
+        {
+            ["type"] = "Action.Submit",
+            ["title"] = title,
+            ["style"] = style,
+            ["data"] = data
+        };
     }
 
     private static JsonObject Execute(string title, string verb, string style, ApprovalDispatchPayload payload) =>

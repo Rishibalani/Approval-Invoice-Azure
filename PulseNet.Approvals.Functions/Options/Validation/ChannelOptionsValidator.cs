@@ -31,6 +31,9 @@ internal sealed class ChannelOptionsValidator : IValidateOptions<ChannelOptions>
 
     public ChannelOptionsValidator(IConfiguration configuration) => _configuration = configuration;
 
+    private bool UsePowerAutomateCards =>
+        string.Equals(_configuration["USE_POWER_AUTOMATE_CARDS"], "true", StringComparison.OrdinalIgnoreCase);
+
     public ValidateOptionsResult Validate(string? name, ChannelOptions options)
     {
         var errors = new OptionsErrors(_configuration);
@@ -40,6 +43,14 @@ internal sealed class ChannelOptionsValidator : IValidateOptions<ChannelOptions>
         errors.RequirePositive(options.MaxLinesOnCard, $"{Section}:MaxLinesOnCard");
 
         ValidateTeams(options.Teams, errors);
+
+        // Option D needs its own two settings, and only when it is switched on.
+        if (UsePowerAutomateCards)
+        {
+            errors.RequireAbsoluteUrl(options.Teams.PowerAutomateFlowUrl, $"{Teams}:PowerAutomateFlowUrl");
+            errors.RequireValue(options.Teams.FlowCallbackSecret, $"{Teams}:FlowCallbackSecret");
+            errors.RequirePositive(options.Teams.PowerAutomateHttpTimeoutSeconds, $"{Teams}:PowerAutomateHttpTimeoutSeconds");
+        }
         ValidateOutlook(options.Outlook, errors);
         ValidateWhatsApp(options.WhatsApp, errors);
 
