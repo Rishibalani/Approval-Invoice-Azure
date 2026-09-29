@@ -177,6 +177,29 @@ public sealed record ApproverInfo
     [JsonPropertyName("fallbackChannel")] public string? FallbackChannel { get; init; }
     [JsonPropertyName("channels")] public IReadOnlyList<string> Channels { get; init; } = [];
 
+    /// <summary>
+    /// Whether this approver can sign in to Business Central. Business Central
+    /// derives it from the licence on their User record, so it is never stale.
+    ///
+    /// Null on payloads from an extension older than 1.0.0.7, which did not
+    /// send it - see <see cref="ShowBusinessCentralLink"/>.
+    /// </summary>
+    [JsonPropertyName("isBcUser")] public bool? IsBcUser { get; init; }
+
+    /// <summary>
+    /// Whether to render "View in Business Central" for this approver.
+    ///
+    /// An approver without a licence reaches an access-denied page, which
+    /// reads as a broken integration rather than a licence boundary, so the
+    /// button is left off and they decide from the card itself.
+    ///
+    /// A payload that does not carry the field keeps the old behaviour and
+    /// shows the link: the safe reading of a missing FIELD here is the
+    /// permissive one, because hiding the only escape hatch would strand an
+    /// approver whose licence we simply do not know about.
+    /// </summary>
+    [JsonIgnore] public bool ShowBusinessCentralLink => IsBcUser ?? true;
+
     /// <summary>E.164 mobile number. WhatsApp only.</summary>
     [JsonPropertyName("mobileNumber")] public string? MobileNumber { get; init; }
 

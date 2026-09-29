@@ -175,6 +175,15 @@ public sealed class ApprovalCardBuilder
             body.Add(Text(vm.ChainContext, size: "Small", subtle: true, spacing: "Medium", separator: true));
         }
 
+        // Notify-only AND no Business Central licence leaves a card with no
+        // buttons and no link - a dead end unless it says what to do instead.
+        if (actionMode == ChannelActionMode.NotifyOnly && !payload.Approver.ShowBusinessCentralLink)
+        {
+            body.Add(Text(
+                "This one cannot be approved from a message. Please ask the finance team to action it in Business Central.",
+                size: "Small", subtle: true, spacing: "Medium", separator: true));
+        }
+
         // The comment box sits in the card body, directly above the buttons.
         //
         // It used to live inside an Action.ShowCard (a pop-out panel per
@@ -476,7 +485,20 @@ public sealed class ApprovalCardBuilder
                 break;
         }
 
-        // View in Business Central is on every card in every mode. When
+        // Skipped for an approver with no Business Central licence: the link
+        // would only take them to an access-denied page. Everything else on the
+        // card - including Approve and Reject - is unaffected.
+        //
+        // This is decided HERE, in code, and the element is simply not added.
+        // Adaptive Card templating ($when) would not work: Teams does not
+        // evaluate templates at render time, so an unexpanded $when ships a
+        // button that shows for everybody.
+        if (!payload.Approver.ShowBusinessCentralLink)
+        {
+            return actions;
+        }
+
+        // View in Business Central is on every other card in every mode. When
         // something goes wrong - a stale token, a changed amount, a channel we
         // never anticipated - this link is the escape hatch that always works.
         if (!string.IsNullOrWhiteSpace(payload.Document.DeepLink))
